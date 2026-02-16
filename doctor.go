@@ -72,6 +72,22 @@ func runDoctor() error {
 		return fmt.Errorf("missing critical dependencies")
 	}
 
+	// Check kubectl (optional - only needed for mono infra)
+	fmt.Print("kubectl (optional): ")
+	if err := checkCommand("kubectl", "version", "--client"); err != nil {
+		fmt.Println("not installed")
+	} else {
+		cmd := exec.Command("kubectl", "version", "--client")
+		if output, err := cmd.Output(); err == nil {
+			// Extract just the version line
+			lines := strings.Split(string(output), "\n")
+			if len(lines) > 0 {
+				fmt.Println(strings.TrimSpace(lines[0]))
+			}
+		}
+	}
+	fmt.Println()
+
 	// Install Go tools from go.mod
 	fmt.Println("📦 Installing Go tools from go.mod...")
 	if err := installGoTools(); err != nil {

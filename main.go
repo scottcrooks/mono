@@ -53,6 +53,15 @@ func main() {
 		os.Exit(0)
 	}
 
+	// Special case: infra command
+	if command == "infra" {
+		if err := runInfra(); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
+		os.Exit(0)
+	}
+
 	// Load config
 	config, err := loadConfig()
 	if err != nil {
@@ -192,6 +201,8 @@ func printUsage() {
 	fmt.Println("Commands:")
 	fmt.Println("  list                  List all services and their commands")
 	fmt.Println("  dev [service...]      Run services with hot reload (concurrent)")
+	fmt.Println("  doctor                Check and fix development environment")
+	fmt.Println("  infra <subcommand>    Manage local infrastructure (see: mono infra)")
 	fmt.Println("  <command>             Run command across services")
 	fmt.Println()
 	fmt.Println("Examples:")
@@ -201,5 +212,7 @@ func printUsage() {
 	fmt.Println("  mono run pythia       Start the backend")
 	fmt.Println("  mono dev              Start all services with hot reload")
 	fmt.Println("  mono dev pythia       Start pythia with hot reload only")
+	fmt.Println("  mono infra up         Deploy local infrastructure")
+	fmt.Println("  mono infra status     Check infrastructure status")
 	fmt.Println("  mono list             Show all services")
 }
