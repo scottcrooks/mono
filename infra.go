@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"syscall"
 	"time"
@@ -100,6 +101,19 @@ func loadInfraConfig() (*InfraConfig, error) {
 	return &config, nil
 }
 
+// kubeNameRe matches valid Kubernetes names: lowercase alphanumeric and hyphens,
+// 1-253 characters, starting and ending with alphanumeric.
+var kubeNameRe = regexp.MustCompile(`^[a-z0-9]([a-z0-9\-]{0,251}[a-z0-9])?$`)
+
+// validateKubeName returns an error if s is not a safe Kubernetes resource name.
+// This prevents argument injection when values from local.yaml are passed to kubectl.
+func validateKubeName(s string) error {
+	if !kubeNameRe.MatchString(s) {
+		return fmt.Errorf("invalid Kubernetes name %q: must match %s", s, kubeNameRe.String())
+	}
+	return nil
+}
+
 // checkKubectl verifies kubectl is available and shows current context
 func checkKubectl() error {
 	// Check if kubectl is installed
@@ -132,6 +146,10 @@ func infraUp(args []string) error {
 		return err
 	}
 
+	if err := validateKubeName(config.Infrastructure.Namespace); err != nil {
+		return fmt.Errorf("infra config: namespace: %w", err)
+	}
+
 	// Filter resources if specific ones requested
 	var resourcesToDeploy []InfraResource
 	if len(args) > 3 {
@@ -155,8 +173,7 @@ func infraUp(args []string) error {
 
 	// Create namespace (idempotent)
 	fmt.Printf("==> [infra] Creating namespace: %s\n", config.Infrastructure.Namespace)
-	//nolint:gosec // G204: kubectl with config-derived namespace is trusted local infra tooling
-	createNsCmd := exec.Command("kubectl", "create", "namespace", config.Infrastructure.Namespace, "--dry-run=client", "-o", "yaml")
+	createNsCmd := exec.Command("kubectl", "create", "namespace", config.Infrastructure.Namespace, "--dry-run=client", "-o", "yaml") //nolint:gosec // G204: namespace validated by validateKubeName above; no shell involved
 	applyNsCmd := exec.Command("kubectl", "apply", "-f", "-")
 	pipe, err := createNsCmd.StdoutPipe()
 	if err != nil {
@@ -199,8 +216,7 @@ func infraUp(args []string) error {
 			return fmt.Errorf("failed to resolve manifest path for %s: %w", res.Name, err)
 		}
 
-		//nolint:gosec // G204: kubectl with config-derived args is trusted local infra tooling
-		applyCmd := exec.Command("kubectl", "apply", "-n", config.Infrastructure.Namespace, "-f", manifestPath)
+		applyCmd := exec.Command("kubectl", "apply", "-n", config.Infrastructure.Namespace, "-f", manifestPath) //nolint:gosec // G204: namespace validated by validateKubeName above; manifestPath resolved via filepath.Abs; no shell involved
 		applyCmd.Stdout = os.Stdout
 		applyCmd.Stderr = os.Stderr
 		if err := applyCmd.Run(); err != nil {
@@ -262,6 +278,10 @@ func infraDown(args []string) error {
 		return err
 	}
 
+	if err := validateKubeName(config.Infrastructure.Namespace); err != nil {
+		return fmt.Errorf("infra config: namespace: %w", err)
+	}
+
 	state := loadState()
 
 	// Filter resources if specific ones requested
@@ -305,8 +325,7 @@ func infraDown(args []string) error {
 			return fmt.Errorf("failed to resolve manifest path for %s: %w", res.Name, err)
 		}
 
-		//nolint:gosec // G204: kubectl with config-derived args is trusted local infra tooling
-		deleteCmd := exec.Command("kubectl", "delete", "-n", config.Infrastructure.Namespace, "-f", manifestPath, "--ignore-not-found=true")
+		deleteCmd := exec.Command("kubectl", "delete", "-n", config.Infrastructure.Namespace, "-f", manifestPath, "--ignore-not-found=true") //nolint:gosec // G204: namespace validated by validateKubeName above; manifestPath resolved via filepath.Abs; no shell involved
 		deleteCmd.Stdout = os.Stdout
 		deleteCmd.Stderr = os.Stderr
 		if err := deleteCmd.Run(); err != nil {
@@ -334,6 +353,10 @@ func infraStatus() error {
 
 	if err := checkKubectl(); err != nil {
 		return err
+	}
+
+	if err := validateKubeName(config.Infrastructure.Namespace); err != nil {
+		return fmt.Errorf("infra config: namespace: %w", err)
 	}
 
 	state := loadState()
@@ -381,6 +404,10 @@ func infraLogs(args []string) error {
 		return err
 	}
 
+	if err := validateKubeName(config.Infrastructure.Namespace); err != nil {
+		return fmt.Errorf("infra config: namespace: %w", err)
+	}
+
 	// Find resource
 	var resource *InfraResource
 	for _, res := range config.Infrastructure.Resources {
@@ -396,8 +423,7 @@ func infraLogs(args []string) error {
 
 	// Tail logs
 	fmt.Printf("==> [infra] Tailing logs for %s...\n", resourceName)
-	//nolint:gosec // G204: kubectl with config-derived args is trusted local infra tooling
-	logsCmd := exec.Command("kubectl", "logs", "-n", config.Infrastructure.Namespace, "-l", resource.ReadyCheck.Selector, "-f", "--tail=50")
+	logsCmd := exec.Command("kubectl", "logs", "-n", config.Infrastructure.Namespace, "-l", resource.ReadyCheck.Selector, "-f", "--tail=50") //nolint:gosec // G204: namespace validated by validateKubeName above; selector is a label string from local.yaml; no shell involved
 	logsCmd.Stdout = os.Stdout
 	logsCmd.Stderr = os.Stderr
 	logsCmd.Stdin = os.Stdin
@@ -428,8 +454,7 @@ func waitForReady(namespace, selector string, timeout time.Duration) error {
 // startPortForward starts a kubectl port-forward in the background
 func startPortForward(namespace string, pf *PortForwardSpec) (int, error) {
 	portMapping := fmt.Sprintf("%d:%d", pf.LocalPort, pf.TargetPort)
-	//nolint:gosec // G204: kubectl with config-derived args is trusted local infra tooling
-	cmd := exec.Command("kubectl", "port-forward", "-n", namespace, pf.Target, portMapping)
+	cmd := exec.Command("kubectl", "port-forward", "-n", namespace, pf.Target, portMapping) //nolint:gosec // G204: namespace validated by validateKubeName at call sites; portMapping is fmt.Sprintf of integer ports; no shell involved
 
 	// Redirect outputs to /dev/null to prevent the process from blocking
 	devNull, err := os.OpenFile(os.DevNull, os.O_WRONLY, 0)

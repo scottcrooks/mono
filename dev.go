@@ -6,9 +6,9 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -120,9 +120,13 @@ func runServiceDev(ctx context.Context, svc Service) error {
 		return fmt.Errorf("failed to resolve path: %w", err)
 	}
 
-	// Create command with context
-	//nolint:gosec // G204: cmdString comes from services.yaml, trusted config
-	cmd := exec.CommandContext(ctx, "sh", "-c", cmdString)
+	// Parse the command string and build a command without a shell interpreter.
+	// commandFromParts uses an explicit allowlist so only known binaries execute.
+	parts := strings.Fields(cmdString)
+	cmd, err := commandFromParts(ctx, parts)
+	if err != nil {
+		return fmt.Errorf("[%s] %w", svc.Name, err)
+	}
 	cmd.Dir = absPath
 
 	// Create prefix writer for stdout

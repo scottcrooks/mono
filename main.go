@@ -1,10 +1,12 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 )
@@ -146,9 +148,14 @@ func runCommand(svc Service, command string) error {
 		return err
 	}
 
-	// Execute command in service directory
-	//nolint:gosec // G204: cmdString comes from services.yaml, trusted config
-	cmd := exec.Command("sh", "-c", cmdString)
+	// Parse the command string and build a command without a shell interpreter.
+	// commandFromParts uses an explicit allowlist so only known binaries execute.
+	parts := strings.Fields(cmdString)
+	cmd, err := commandFromParts(context.Background(), parts)
+	if err != nil {
+		return fmt.Errorf("[%s] %w", svc.Name, err)
+	}
+
 	cmd.Dir = absPath
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
@@ -161,6 +168,31 @@ func runCommand(svc Service, command string) error {
 
 	fmt.Printf("✓ [%s] %s completed\n\n", svc.Name, command)
 	return nil
+}
+
+// commandFromParts builds an exec.Cmd from a parsed command slice without using a shell
+// interpreter. Only binaries in the allowlist are accepted, which prevents arbitrary
+// binary execution from config files and satisfies gosec G204.
+// Add new entries here when services.yaml requires a new binary.
+func commandFromParts(ctx context.Context, parts []string) (*exec.Cmd, error) {
+	if len(parts) == 0 {
+		return nil, fmt.Errorf("empty command")
+	}
+	args := parts[1:]
+	switch parts[0] {
+	case "go":
+		return exec.CommandContext(ctx, "go", args...), nil //nolint:gosec // G204: binary is a string literal; args are from services.yaml (committed config), not shell-interpreted
+	case "pnpm":
+		return exec.CommandContext(ctx, "pnpm", args...), nil //nolint:gosec // G204: same as above
+	case "npx":
+		return exec.CommandContext(ctx, "npx", args...), nil //nolint:gosec // G204: same as above
+	case "node":
+		return exec.CommandContext(ctx, "node", args...), nil //nolint:gosec // G204: same as above
+	case "npm":
+		return exec.CommandContext(ctx, "npm", args...), nil //nolint:gosec // G204: same as above
+	default:
+		return nil, fmt.Errorf("binary %q is not in the command allowlist; add it to commandFromParts if needed", parts[0])
+	}
 }
 
 // listServices prints all services and their available commands
