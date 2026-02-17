@@ -1,3 +1,4 @@
+// Package main implements the mono monorepo orchestration tool.
 package main
 
 import (
@@ -13,8 +14,14 @@ import (
 	"time"
 )
 
-// runDev starts all services with dev commands concurrently
-func runDev() error {
+type devCommand struct{}
+
+func init() {
+	registerCommand("dev", &devCommand{})
+}
+
+// Run starts all services with dev commands concurrently
+func (c *devCommand) Run(args []string) error {
 	// Load config
 	config, err := loadConfig()
 	if err != nil {
@@ -23,9 +30,9 @@ func runDev() error {
 
 	// Determine which services to run
 	var servicesToRun []Service
-	if len(os.Args) > 2 {
+	if len(args) > 2 {
 		// Specific services requested
-		requestedServices := os.Args[2:]
+		requestedServices := args[2:]
 		for _, name := range requestedServices {
 			svc := findService(config, name)
 			if svc == nil {
@@ -114,6 +121,7 @@ func runServiceDev(ctx context.Context, svc Service) error {
 	}
 
 	// Create command with context
+	//nolint:gosec // G204: cmdString comes from services.yaml, trusted config
 	cmd := exec.CommandContext(ctx, "sh", "-c", cmdString)
 	cmd.Dir = absPath
 

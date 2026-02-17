@@ -9,6 +9,29 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+// Command is the strategy interface for mono commands.
+type Command interface {
+	Run(args []string) error
+}
+
+var commands = map[string]Command{}
+
+func registerCommand(name string, cmd Command) {
+	commands[name] = cmd
+}
+
+// listCommand handles the "list" subcommand.
+type listCommand struct{}
+
+func init() {
+	registerCommand("list", &listCommand{})
+}
+
+func (c *listCommand) Run(_ []string) error {
+	listServices()
+	return nil
+}
+
 // Config represents the services.yaml structure
 type Config struct {
 	Services []Service `yaml:"services"`
@@ -30,39 +53,21 @@ func main() {
 
 	command := os.Args[1]
 
-	// Special case: list command
-	if command == "list" {
-		listServices()
-		os.Exit(0)
-	}
-
-	// Special case: dev command
-	if command == "dev" {
-		if err := runDev(); err != nil {
+	if cmd, ok := commands[command]; ok {
+		if err := cmd.Run(os.Args); err != nil {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			os.Exit(1)
 		}
 		os.Exit(0)
 	}
 
-	// Special case: doctor command
-	if command == "doctor" {
-		if err := runDoctor(); err != nil {
-			os.Exit(1)
-		}
-		os.Exit(0)
-	}
+	// Fallback: generic service-registry command
+	runServiceCommand(command)
+}
 
-	// Special case: infra command
-	if command == "infra" {
-		if err := runInfra(); err != nil {
-			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-			os.Exit(1)
-		}
-		os.Exit(0)
-	}
-
-	// Load config
+// runServiceCommand runs a registry-defined command (test, lint, build, etc.)
+// across one or more services.
+func runServiceCommand(command string) {
 	config, err := loadConfig()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error loading config: %v\n", err)
@@ -142,6 +147,7 @@ func runCommand(svc Service, command string) error {
 	}
 
 	// Execute command in service directory
+	//nolint:gosec // G204: cmdString comes from services.yaml, trusted config
 	cmd := exec.Command("sh", "-c", cmdString)
 	cmd.Dir = absPath
 	cmd.Stdout = os.Stdout
@@ -203,6 +209,7 @@ func printUsage() {
 	fmt.Println("  dev [service...]      Run services with hot reload (concurrent)")
 	fmt.Println("  doctor                Check and fix development environment")
 	fmt.Println("  infra <subcommand>    Manage local infrastructure (see: mono infra)")
+	fmt.Println("  migrate <service> <subcommand>  Manage database migrations (see: mono migrate)")
 	fmt.Println("  <command>             Run command across services")
 	fmt.Println()
 	fmt.Println("Examples:")
@@ -214,5 +221,8 @@ func printUsage() {
 	fmt.Println("  mono dev pythia       Start pythia with hot reload only")
 	fmt.Println("  mono infra up         Deploy local infrastructure")
 	fmt.Println("  mono infra status     Check infrastructure status")
+	fmt.Println("  mono migrate pythia up       Apply all pending migrations")
+	fmt.Println("  mono migrate pythia status   Show migration version")
+	fmt.Println("  mono migrate pythia create add_foo  Create migration files")
 	fmt.Println("  mono list             Show all services")
 }

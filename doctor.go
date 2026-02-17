@@ -8,8 +8,14 @@ import (
 	"strings"
 )
 
-// runDoctor performs environment health checks and fixes
-func runDoctor() error {
+type doctorCommand struct{}
+
+func init() {
+	registerCommand("doctor", &doctorCommand{})
+}
+
+// Run performs environment health checks and fixes
+func (c *doctorCommand) Run(_ []string) error {
 	fmt.Println("🔍 Checking development environment...")
 	fmt.Println()
 

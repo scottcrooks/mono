@@ -53,24 +53,30 @@ type InfraState struct {
 
 const stateFile = ".infra-state.json"
 
-// runInfra dispatches to infra subcommands
-func runInfra() error {
-	if len(os.Args) < 3 {
+type infraCommand struct{}
+
+func init() {
+	registerCommand("infra", &infraCommand{})
+}
+
+// Run dispatches to infra subcommands
+func (c *infraCommand) Run(args []string) error {
+	if len(args) < 3 {
 		printInfraUsage()
 		return fmt.Errorf("missing subcommand")
 	}
 
-	subcommand := os.Args[2]
+	subcommand := args[2]
 
 	switch subcommand {
 	case "up":
-		return infraUp()
+		return infraUp(args)
 	case "down":
-		return infraDown()
+		return infraDown(args)
 	case "status":
 		return infraStatus()
 	case "logs":
-		return infraLogs()
+		return infraLogs(args)
 	default:
 		printInfraUsage()
 		return fmt.Errorf("unknown subcommand: %s", subcommand)
@@ -116,7 +122,7 @@ func checkKubectl() error {
 }
 
 // infraUp deploys infrastructure resources
-func infraUp() error {
+func infraUp(args []string) error {
 	config, err := loadInfraConfig()
 	if err != nil {
 		return err
@@ -128,8 +134,8 @@ func infraUp() error {
 
 	// Filter resources if specific ones requested
 	var resourcesToDeploy []InfraResource
-	if len(os.Args) > 3 {
-		requestedResources := os.Args[3:]
+	if len(args) > 3 {
+		requestedResources := args[3:]
 		for _, name := range requestedResources {
 			found := false
 			for _, res := range config.Infrastructure.Resources {
@@ -149,6 +155,7 @@ func infraUp() error {
 
 	// Create namespace (idempotent)
 	fmt.Printf("==> [infra] Creating namespace: %s\n", config.Infrastructure.Namespace)
+	//nolint:gosec // G204: kubectl with config-derived namespace is trusted local infra tooling
 	createNsCmd := exec.Command("kubectl", "create", "namespace", config.Infrastructure.Namespace, "--dry-run=client", "-o", "yaml")
 	applyNsCmd := exec.Command("kubectl", "apply", "-f", "-")
 	pipe, err := createNsCmd.StdoutPipe()
@@ -192,6 +199,7 @@ func infraUp() error {
 			return fmt.Errorf("failed to resolve manifest path for %s: %w", res.Name, err)
 		}
 
+		//nolint:gosec // G204: kubectl with config-derived args is trusted local infra tooling
 		applyCmd := exec.Command("kubectl", "apply", "-n", config.Infrastructure.Namespace, "-f", manifestPath)
 		applyCmd.Stdout = os.Stdout
 		applyCmd.Stderr = os.Stderr
@@ -244,7 +252,7 @@ func infraUp() error {
 }
 
 // infraDown tears down infrastructure resources
-func infraDown() error {
+func infraDown(args []string) error {
 	config, err := loadInfraConfig()
 	if err != nil {
 		return err
@@ -258,8 +266,8 @@ func infraDown() error {
 
 	// Filter resources if specific ones requested
 	var resourcesToRemove []InfraResource
-	if len(os.Args) > 3 {
-		requestedResources := os.Args[3:]
+	if len(args) > 3 {
+		requestedResources := args[3:]
 		for _, name := range requestedResources {
 			found := false
 			for _, res := range config.Infrastructure.Resources {
@@ -297,6 +305,7 @@ func infraDown() error {
 			return fmt.Errorf("failed to resolve manifest path for %s: %w", res.Name, err)
 		}
 
+		//nolint:gosec // G204: kubectl with config-derived args is trusted local infra tooling
 		deleteCmd := exec.Command("kubectl", "delete", "-n", config.Infrastructure.Namespace, "-f", manifestPath, "--ignore-not-found=true")
 		deleteCmd.Stdout = os.Stdout
 		deleteCmd.Stderr = os.Stderr
@@ -360,12 +369,12 @@ func infraStatus() error {
 }
 
 // infraLogs tails logs from a specific resource
-func infraLogs() error {
-	if len(os.Args) < 4 {
+func infraLogs(args []string) error {
+	if len(args) < 4 {
 		return fmt.Errorf("usage: mono infra logs <resource>")
 	}
 
-	resourceName := os.Args[3]
+	resourceName := args[3]
 
 	config, err := loadInfraConfig()
 	if err != nil {
@@ -387,6 +396,7 @@ func infraLogs() error {
 
 	// Tail logs
 	fmt.Printf("==> [infra] Tailing logs for %s...\n", resourceName)
+	//nolint:gosec // G204: kubectl with config-derived args is trusted local infra tooling
 	logsCmd := exec.Command("kubectl", "logs", "-n", config.Infrastructure.Namespace, "-l", resource.ReadyCheck.Selector, "-f", "--tail=50")
 	logsCmd.Stdout = os.Stdout
 	logsCmd.Stderr = os.Stderr
@@ -418,6 +428,7 @@ func waitForReady(namespace, selector string, timeout time.Duration) error {
 // startPortForward starts a kubectl port-forward in the background
 func startPortForward(namespace string, pf *PortForwardSpec) (int, error) {
 	portMapping := fmt.Sprintf("%d:%d", pf.LocalPort, pf.TargetPort)
+	//nolint:gosec // G204: kubectl with config-derived args is trusted local infra tooling
 	cmd := exec.Command("kubectl", "port-forward", "-n", namespace, pf.Target, portMapping)
 
 	// Redirect outputs to /dev/null to prevent the process from blocking
@@ -429,7 +440,7 @@ func startPortForward(namespace string, pf *PortForwardSpec) (int, error) {
 	cmd.Stderr = devNull
 
 	if err := cmd.Start(); err != nil {
-		devNull.Close()
+		_ = devNull.Close()
 		return 0, err
 	}
 
