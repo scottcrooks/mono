@@ -36,7 +36,8 @@ func (c *listCommand) Run(_ []string) error {
 
 // Config represents the services.yaml structure
 type Config struct {
-	Services []Service `yaml:"services"`
+	Services []Service  `yaml:"services"`
+	Local    *InfraSpec `yaml:"local"`
 }
 
 // Service represents a single service configuration
@@ -44,6 +45,7 @@ type Service struct {
 	Name        string            `yaml:"name"`
 	Path        string            `yaml:"path"`
 	Description string            `yaml:"description"`
+	Depends     []string          `yaml:"depends"`
 	Commands    map[string]string `yaml:"commands"`
 }
 
@@ -209,6 +211,11 @@ func listServices() {
 	for _, svc := range config.Services {
 		fmt.Printf("  %s - %s\n", svc.Name, svc.Description)
 		fmt.Printf("    Path: %s\n", svc.Path)
+
+		if len(svc.Depends) > 0 {
+			fmt.Printf("    Depends: %s\n", strings.Join(svc.Depends, ", "))
+		}
+
 		fmt.Printf("    Commands: ")
 
 		var cmds []string
@@ -226,6 +233,18 @@ func listServices() {
 		}
 		fmt.Println()
 		fmt.Println()
+	}
+
+	if config.Local != nil && len(config.Local.Resources) > 0 {
+		fmt.Println("Local infrastructure resources:")
+		fmt.Println()
+		for _, res := range config.Local.Resources {
+			fmt.Printf("  %s - %s\n", res.Name, res.Description)
+			if res.PortForward != nil {
+				fmt.Printf("    Port-forward: localhost:%d -> %s:%d\n", res.PortForward.LocalPort, res.PortForward.Target, res.PortForward.TargetPort)
+			}
+			fmt.Println()
+		}
 	}
 }
 

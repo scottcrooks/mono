@@ -54,6 +54,11 @@ func (c *devCommand) Run(args []string) error {
 		return nil
 	}
 
+	// Auto-start any infrastructure dependencies that aren't already running
+	if err := ensureInfraDeps(config, servicesToRun); err != nil {
+		return fmt.Errorf("failed to start infrastructure dependencies: %w", err)
+	}
+
 	// Create context for graceful shutdown
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -102,6 +107,61 @@ func (c *devCommand) Run(args []string) error {
 			fmt.Fprintf(os.Stderr, "  %v\n", err)
 		}
 		return fmt.Errorf("%d service(s) failed", len(errors))
+	}
+
+	return nil
+}
+
+// ensureInfraDeps checks all depends entries for the given services and
+// auto-starts any local infrastructure resources that are not already running.
+// It does NOT tear them down on exit — infrastructure persists between dev sessions.
+func ensureInfraDeps(config *Config, services []Service) error {
+	if config.Local == nil {
+		return nil
+	}
+
+	// Collect unique dependency names across all services being run
+	seen := make(map[string]bool)
+	var deps []string
+	for _, svc := range services {
+		for _, dep := range svc.Depends {
+			if !seen[dep] {
+				seen[dep] = true
+				deps = append(deps, dep)
+			}
+		}
+	}
+
+	if len(deps) == 0 {
+		return nil
+	}
+
+	state := loadState()
+
+	// Check each dependency; start it if not already running
+	for _, depName := range deps {
+		var resource *InfraResource
+		for i := range config.Local.Resources {
+			if config.Local.Resources[i].Name == depName {
+				resource = &config.Local.Resources[i]
+				break
+			}
+		}
+		if resource == nil {
+			return fmt.Errorf("service depends on unknown infrastructure resource %q", depName)
+		}
+
+		if isInfraResourceRunning(config.Local, *resource, state) {
+			fmt.Printf("==> [infra] %s already running\n", depName)
+			continue
+		}
+
+		fmt.Printf("==> [infra] Starting dependency: %s\n", depName)
+		// Reuse infraUp by passing the resource name; build synthetic args slice
+		syntheticArgs := []string{"mono", "infra", "up", depName}
+		if err := infraUp(syntheticArgs); err != nil {
+			return fmt.Errorf("failed to start %s: %w", depName, err)
+		}
 	}
 
 	return nil
