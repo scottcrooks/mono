@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 )
 
@@ -120,6 +121,15 @@ func (c *doctorCommand) Run(_ []string) error {
 	listServices()
 	fmt.Println()
 
+	// Install repo-managed git hooks
+	fmt.Println("🪝 Installing git hooks...")
+	if err := installGitHooks(); err != nil {
+		fmt.Fprintf(os.Stderr, "  ✗ Failed to install git hooks: %v\n", err)
+		return err
+	}
+	fmt.Println("  ✓ Git hooks configured")
+	fmt.Println()
+
 	fmt.Println("✅ All checks passed! Environment is ready.")
 	return nil
 }
@@ -196,4 +206,35 @@ func parseGoModTools() ([]string, error) {
 	}
 
 	return tools, nil
+}
+
+func installGitHooks() error {
+	// Skip outside git worktrees.
+	if err := checkCommand("git", "rev-parse", "--is-inside-work-tree"); err != nil {
+		fmt.Println("  ! Not in a git repository; skipping hook setup")
+		return nil
+	}
+
+	hooksPath := ".githooks"
+	preCommitHook := filepath.Join(hooksPath, "pre-commit")
+
+	if err := os.MkdirAll(hooksPath, 0o755); err != nil {
+		return fmt.Errorf("create hooks directory: %w", err)
+	}
+
+	// Configure repository-local hooks path.
+	gitConfigCmd := exec.Command("git", "config", "core.hooksPath", hooksPath)
+	gitConfigCmd.Stdout = nil
+	gitConfigCmd.Stderr = os.Stderr
+	if err := gitConfigCmd.Run(); err != nil {
+		return fmt.Errorf("set core.hooksPath: %w", err)
+	}
+
+	if _, err := os.Stat(preCommitHook); err == nil {
+		if err := os.Chmod(preCommitHook, 0o755); err != nil {
+			return fmt.Errorf("chmod pre-commit hook: %w", err)
+		}
+	}
+
+	return nil
 }
