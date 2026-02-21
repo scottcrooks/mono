@@ -288,8 +288,6 @@ func TestCopyProjectEnvFilesSkipsExistingDest(t *testing.T) {
 }
 
 func TestIsBranchMergedIntoBase(t *testing.T) {
-	t.Parallel()
-
 	repo := initTestGitRepo(t)
 	writeFile(t, repo, "README.md", "root\n")
 	gitRun(t, repo, "add", "README.md")
@@ -300,6 +298,19 @@ func TestIsBranchMergedIntoBase(t *testing.T) {
 	gitRun(t, repo, "add", "feature.txt")
 	gitRun(t, repo, "commit", "-m", "feature")
 	gitRun(t, repo, "checkout", "main")
+
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("os.Getwd: %v", err)
+	}
+	t.Cleanup(func() {
+		if chdirErr := os.Chdir(wd); chdirErr != nil {
+			t.Fatalf("restore cwd: %v", chdirErr)
+		}
+	})
+	if err := os.Chdir(repo); err != nil {
+		t.Fatalf("os.Chdir repo: %v", err)
+	}
 
 	merged, err := isBranchMergedIntoBase("feature/demo", "main")
 	if err != nil {
@@ -321,8 +332,6 @@ func TestIsBranchMergedIntoBase(t *testing.T) {
 }
 
 func TestDefaultMergeBaseBranchFallsBackToMain(t *testing.T) {
-	t.Parallel()
-
 	repo := initTestGitRepo(t)
 	writeFile(t, repo, "README.md", "root\n")
 	gitRun(t, repo, "add", "README.md")
