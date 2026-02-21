@@ -262,6 +262,7 @@ func printUsage() {
 	fmt.Println("  hosts <subcommand>    Manage local hosts entries (see: mono hosts)")
 	fmt.Println("  infra <subcommand>    Manage local infrastructure (see: mono infra)")
 	fmt.Println("  migrate <service> <subcommand>  Manage database migrations (see: mono migrate)")
+	fmt.Println("  worktree <subcommand> Manage git worktrees (see: mono worktree)")
 	fmt.Println("  <command>             Run command across services")
 	fmt.Println()
 	fmt.Println("Examples:")
@@ -278,5 +279,7 @@ func printUsage() {
 	fmt.Println("  mono migrate pythia up       Apply all pending migrations")
 	fmt.Println("  mono migrate pythia status   Show migration version")
 	fmt.Println("  mono migrate pythia create add_foo  Create migration files")
+	fmt.Println("  mono worktree create feature/foo   Create a branch worktree")
+	fmt.Println("  mono worktree list                 List worktrees")
 	fmt.Println("  mono list             Show all services")
 }
