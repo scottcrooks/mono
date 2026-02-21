@@ -2,6 +2,7 @@ package main
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"testing"
 	"time"
@@ -283,5 +284,98 @@ func TestCopyProjectEnvFilesSkipsExistingDest(t *testing.T) {
 	}
 	if string(data) != "DEST=1\n" {
 		t.Fatalf("destination env should be unchanged, got %q", string(data))
+	}
+}
+
+func TestIsBranchMergedIntoBase(t *testing.T) {
+	t.Parallel()
+
+	repo := initTestGitRepo(t)
+	writeFile(t, repo, "README.md", "root\n")
+	gitRun(t, repo, "add", "README.md")
+	gitRun(t, repo, "commit", "-m", "initial")
+
+	gitRun(t, repo, "checkout", "-b", "feature/demo")
+	writeFile(t, repo, "feature.txt", "feature\n")
+	gitRun(t, repo, "add", "feature.txt")
+	gitRun(t, repo, "commit", "-m", "feature")
+	gitRun(t, repo, "checkout", "main")
+
+	merged, err := isBranchMergedIntoBase("feature/demo", "main")
+	if err != nil {
+		t.Fatalf("isBranchMergedIntoBase returned error: %v", err)
+	}
+	if merged {
+		t.Fatal("expected feature/demo to be unmerged before merge commit")
+	}
+
+	gitRun(t, repo, "merge", "--no-ff", "feature/demo", "-m", "merge feature")
+
+	merged, err = isBranchMergedIntoBase("feature/demo", "main")
+	if err != nil {
+		t.Fatalf("isBranchMergedIntoBase returned error after merge: %v", err)
+	}
+	if !merged {
+		t.Fatal("expected feature/demo to be merged after merge commit")
+	}
+}
+
+func TestDefaultMergeBaseBranchFallsBackToMain(t *testing.T) {
+	t.Parallel()
+
+	repo := initTestGitRepo(t)
+	writeFile(t, repo, "README.md", "root\n")
+	gitRun(t, repo, "add", "README.md")
+	gitRun(t, repo, "commit", "-m", "initial")
+
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("os.Getwd: %v", err)
+	}
+	t.Cleanup(func() {
+		if chdirErr := os.Chdir(wd); chdirErr != nil {
+			t.Fatalf("restore cwd: %v", chdirErr)
+		}
+	})
+	if err := os.Chdir(repo); err != nil {
+		t.Fatalf("os.Chdir repo: %v", err)
+	}
+
+	branch, err := defaultMergeBaseBranch()
+	if err != nil {
+		t.Fatalf("defaultMergeBaseBranch returned error: %v", err)
+	}
+	if branch != "main" {
+		t.Fatalf("expected default merge base to be main, got %q", branch)
+	}
+}
+
+func initTestGitRepo(t *testing.T) string {
+	t.Helper()
+	repo := t.TempDir()
+	gitRun(t, repo, "init", "-b", "main")
+	gitRun(t, repo, "config", "user.name", "Mono Test")
+	gitRun(t, repo, "config", "user.email", "mono-test@example.com")
+	return repo
+}
+
+func gitRun(t *testing.T, dir string, args ...string) {
+	t.Helper()
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %s failed: %v\n%s", args, err, string(out))
+	}
+}
+
+func writeFile(t *testing.T, dir, relPath, content string) {
+	t.Helper()
+	absPath := filepath.Join(dir, relPath)
+	if err := os.MkdirAll(filepath.Dir(absPath), 0o755); err != nil {
+		t.Fatalf("mkdir %s: %v", filepath.Dir(absPath), err)
+	}
+	if err := os.WriteFile(absPath, []byte(content), 0o600); err != nil {
+		t.Fatalf("write %s: %v", absPath, err)
 	}
 }

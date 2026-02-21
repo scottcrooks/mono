@@ -119,6 +119,12 @@ func runWorktreeList() error {
 		return nil
 	}
 
+	mergeBase, mergeBaseErr := defaultMergeBaseBranch()
+	mergeBaseLabel := mergeBase
+	if mergeBaseLabel == "" {
+		mergeBaseLabel = "default"
+	}
+
 	for _, entry := range entries {
 		branch := entry.Branch
 		if branch == "" && entry.Detached {
@@ -131,11 +137,28 @@ func runWorktreeList() error {
 		} else if dirty {
 			dirtyState = "dirty"
 		}
+		mergedState := "unknown"
+		switch {
+		case entry.Branch == "" || entry.Detached:
+			mergedState = "n/a"
+		case mergeBaseErr != nil:
+			mergedState = "unknown"
+		default:
+			merged, err := isBranchMergedIntoBase(entry.Branch, mergeBase)
+			if err != nil {
+				mergedState = "unknown"
+			} else if merged {
+				mergedState = "yes"
+			} else {
+				mergedState = "no"
+			}
+		}
 
 		fmt.Printf("%s\n", entry.Path)
 		fmt.Printf("  branch: %s\n", branch)
 		fmt.Printf("  head:   %s\n", shortSHA(entry.Head))
 		fmt.Printf("  status: %s\n", dirtyState)
+		fmt.Printf("  merged(%s): %s\n", mergeBaseLabel, mergedState)
 		fmt.Println()
 	}
 
@@ -432,6 +455,44 @@ func shortSHA(sha string) string {
 		return sha[:12]
 	}
 	return sha
+}
+
+func defaultMergeBaseBranch() (string, error) {
+	repoRoot, err := gitRepoRoot()
+	if err != nil {
+		return "", err
+	}
+
+	originHeadCmd := exec.Command("git", "symbolic-ref", "--short", "refs/remotes/origin/HEAD")
+	originHeadCmd.Dir = repoRoot
+	if out, err := originHeadCmd.Output(); err == nil {
+		branch := strings.TrimSpace(string(out))
+		if branch != "" {
+			return branch, nil
+		}
+	}
+
+	for _, candidate := range []string{"main", "master", "origin/main", "origin/master"} {
+		verifyCmd := exec.Command("git", "rev-parse", "--verify", "--quiet", candidate+"^{commit}")
+		verifyCmd.Dir = repoRoot
+		if err := verifyCmd.Run(); err == nil {
+			return candidate, nil
+		}
+	}
+
+	return "", errors.New("could not determine default base branch (tried origin/HEAD, main, master)")
+}
+
+func isBranchMergedIntoBase(branch, base string) (bool, error) {
+	cmd := exec.Command("git", "merge-base", "--is-ancestor", branch, base)
+	if err := cmd.Run(); err != nil {
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) && exitErr.ExitCode() == 1 {
+			return false, nil
+		}
+		return false, fmt.Errorf("git merge-base --is-ancestor %s %s failed: %w", branch, base, err)
+	}
+	return true, nil
 }
 
 func runBootstrap(worktreePath string) error {
