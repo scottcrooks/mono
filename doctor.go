@@ -23,12 +23,14 @@ func (c *doctorCommand) Run(_ []string) error {
 	hasErrors := false
 
 	// Check Go
+	goInstalled := false
 	fmt.Print("Go (1.25.7+): ")
 	if err := checkCommand("go", "version"); err != nil {
 		fmt.Println("  ✗ Go is NOT installed")
 		fmt.Println("  → Install from: https://go.dev/dl/")
 		hasErrors = true
 	} else {
+		goInstalled = true
 		cmd := exec.Command("go", "version")
 		if output, err := cmd.Output(); err == nil {
 			fmt.Println(strings.TrimSpace(string(output)))
@@ -36,6 +38,22 @@ func (c *doctorCommand) Run(_ []string) error {
 		}
 	}
 	fmt.Println()
+
+	// Check go fix support (required by verification workflow)
+	if goInstalled {
+		fmt.Print("go fix support: ")
+		if err := checkGoFixSupport(); err != nil {
+			fmt.Println("  ✗ go fix is NOT available")
+			fmt.Printf("  → %v\n", err)
+			printGoToolchainDiagnostics()
+			fmt.Println("  → Reinstall/upgrade Go from: https://go.dev/dl/")
+			hasErrors = true
+		} else {
+			fmt.Println("available")
+			fmt.Println("  ✓ go fix is available")
+		}
+		fmt.Println()
+	}
 
 	// Check Node.js
 	fmt.Print("Node.js (22.x+): ")
@@ -206,6 +224,39 @@ func parseGoModTools() ([]string, error) {
 	}
 
 	return tools, nil
+}
+
+// checkGoFixSupport verifies go fix can execute its underlying toolchain command.
+func checkGoFixSupport() error {
+	cmd := exec.Command("go", "tool", "fix", "-h")
+	output, err := cmd.CombinedOutput()
+	if err == nil {
+		return nil
+	}
+
+	combined := strings.TrimSpace(string(output))
+	if strings.Contains(combined, `no such tool "fix"`) {
+		return fmt.Errorf("Go toolchain is missing cmd/fix (output: %s)", combined)
+	}
+
+	// Non-zero from -h is acceptable as long as the tool exists.
+	return nil
+}
+
+func printGoToolchainDiagnostics() {
+	cmd := exec.Command("go", "env", "GOROOT", "GOTOOLDIR", "GOVERSION")
+	output, err := cmd.Output()
+	if err != nil {
+		fmt.Println("  → Unable to read Go toolchain diagnostics")
+		return
+	}
+
+	lines := strings.Split(strings.TrimSpace(string(output)), "\n")
+	if len(lines) >= 3 {
+		fmt.Printf("  → Go version: %s\n", lines[2])
+		fmt.Printf("  → GOROOT: %s\n", lines[0])
+		fmt.Printf("  → GOTOOLDIR: %s\n", lines[1])
+	}
 }
 
 func installGitHooks() error {
