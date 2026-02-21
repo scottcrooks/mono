@@ -1,13 +1,17 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
+
+	"gopkg.in/yaml.v3"
 )
 
 type worktreeCommand struct{}
@@ -84,7 +88,21 @@ func runWorktreeCreate(args []string) error {
 		return nil
 	}
 
+	copied, err := copyProjectEnvFiles(repoRoot, dest)
+	if err != nil {
+		return err
+	}
+	if copied > 0 {
+		fmt.Printf("[ok] Copied %d .env file(s) into worktree\n", copied)
+	} else {
+		fmt.Println("[skip] No .env files found to copy from apps/ or packages/")
+	}
+
 	if err := runBootstrap(dest); err != nil {
+		return err
+	}
+
+	if err := runWorktreeRequirements(dest); err != nil {
 		return err
 	}
 
@@ -459,6 +477,130 @@ func hasDoctorTarget(makefileContent string) bool {
 		}
 	}
 	return false
+}
+
+func copyProjectEnvFiles(sourceRoot, destRoot string) (int, error) {
+	relPaths, err := findProjectEnvFiles(sourceRoot)
+	if err != nil {
+		return 0, err
+	}
+	if len(relPaths) == 0 {
+		return 0, nil
+	}
+
+	copied := 0
+	for _, relPath := range relPaths {
+		srcPath := filepath.Join(sourceRoot, relPath)
+		dstPath := filepath.Join(destRoot, relPath)
+
+		if _, statErr := os.Stat(dstPath); statErr == nil {
+			continue
+		} else if !os.IsNotExist(statErr) {
+			return copied, fmt.Errorf("failed to inspect destination %s: %w", dstPath, statErr)
+		}
+
+		if err := os.MkdirAll(filepath.Dir(dstPath), 0o755); err != nil {
+			return copied, fmt.Errorf("failed to create destination directory for %s: %w", dstPath, err)
+		}
+
+		info, err := os.Stat(srcPath)
+		if err != nil {
+			return copied, fmt.Errorf("failed to stat source env file %s: %w", srcPath, err)
+		}
+
+		data, err := os.ReadFile(srcPath)
+		if err != nil {
+			return copied, fmt.Errorf("failed to read source env file %s: %w", srcPath, err)
+		}
+
+		if err := os.WriteFile(dstPath, data, info.Mode().Perm()); err != nil {
+			return copied, fmt.Errorf("failed to write destination env file %s: %w", dstPath, err)
+		}
+		copied++
+	}
+
+	return copied, nil
+}
+
+func findProjectEnvFiles(repoRoot string) ([]string, error) {
+	roots := []string{
+		filepath.Join(repoRoot, "apps"),
+		filepath.Join(repoRoot, "packages"),
+	}
+
+	paths := make([]string, 0)
+	for _, root := range roots {
+		if _, err := os.Stat(root); err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			return nil, fmt.Errorf("failed to inspect %s: %w", root, err)
+		}
+
+		if err := filepath.WalkDir(root, func(path string, d os.DirEntry, walkErr error) error {
+			if walkErr != nil {
+				return walkErr
+			}
+			if d.IsDir() {
+				return nil
+			}
+			if d.Name() != ".env" {
+				return nil
+			}
+			relPath, err := filepath.Rel(repoRoot, path)
+			if err != nil {
+				return err
+			}
+			paths = append(paths, relPath)
+			return nil
+		}); err != nil {
+			return nil, fmt.Errorf("failed to search for .env files under %s: %w", root, err)
+		}
+	}
+
+	sort.Strings(paths)
+	return paths, nil
+}
+
+func runWorktreeRequirements(worktreePath string) error {
+	configPath := filepath.Join(worktreePath, "services.yaml")
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		return fmt.Errorf("failed to read %s: %w", configPath, err)
+	}
+
+	var config Config
+	if err := yaml.Unmarshal(data, &config); err != nil {
+		return fmt.Errorf("failed to parse %s: %w", configPath, err)
+	}
+
+	for _, svc := range config.Services {
+		cmdString, exists := svc.Commands["reqs"]
+		if !exists {
+			fmt.Printf("[skip] [%s] no 'reqs' command defined\n", svc.Name)
+			continue
+		}
+
+		fmt.Printf("==> [%s] reqs\n", svc.Name)
+		servicePath := filepath.Join(worktreePath, svc.Path)
+
+		parts := strings.Fields(cmdString)
+		cmd, err := commandFromParts(context.Background(), parts)
+		if err != nil {
+			return fmt.Errorf("[%s] invalid reqs command: %w", svc.Name, err)
+		}
+		cmd.Dir = servicePath
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+		cmd.Stdin = os.Stdin
+
+		if err := cmd.Run(); err != nil {
+			return fmt.Errorf("[%s] reqs failed: %w", svc.Name, err)
+		}
+		fmt.Printf("[ok] [%s] reqs completed\n\n", svc.Name)
+	}
+
+	return nil
 }
 
 func printWorktreeUsage() {
