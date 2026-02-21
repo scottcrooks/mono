@@ -45,6 +45,7 @@ type InfraState struct {
 }
 
 const stateFile = ".infra-state.json"
+const kubeAPICheckTimeout = "5s"
 
 type infraCommand struct{}
 
@@ -117,6 +118,19 @@ func checkKubectl() error {
 
 	context := strings.TrimSpace(string(output))
 	fmt.Printf("==> [infra] Using kubectl context: %s\n", context)
+
+	// Fail fast if the current context's API server is unreachable.
+	readyCmd := exec.Command("kubectl", "--request-timeout="+kubeAPICheckTimeout, "get", "--raw=/readyz")
+	readyOutput, err := readyCmd.CombinedOutput()
+	if err != nil {
+		detail := strings.TrimSpace(string(readyOutput))
+		if detail == "" {
+			return fmt.Errorf("kubernetes API is unreachable for context %q (start Rancher Desktop or switch context): %w", context, err)
+		}
+		return fmt.Errorf("kubernetes API is unreachable for context %q (start Rancher Desktop or switch context): %w: %s", context, err, detail)
+	}
+
+	fmt.Printf("==> [infra] Kubernetes API reachable (timeout %s)\n", kubeAPICheckTimeout)
 	fmt.Println()
 
 	return nil
