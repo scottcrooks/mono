@@ -1,4 +1,4 @@
-package main
+package cli
 
 import (
 	"bufio"
@@ -136,7 +136,9 @@ func (c *doctorCommand) Run(_ []string) error {
 
 	// Verify mono tool
 	fmt.Println("🔧 Verifying mono tool...")
-	listServices()
+	if err := listServices(); err != nil {
+		return err
+	}
 	fmt.Println()
 
 	// Install repo-managed git hooks
@@ -228,6 +230,16 @@ func parseGoModTools() ([]string, error) {
 
 // checkGoFixSupport verifies go fix can execute its underlying toolchain command.
 func checkGoFixSupport() error {
+	helpCmd := exec.Command("go", "fix", "-h")
+	helpOutput, helpErr := helpCmd.CombinedOutput()
+	if helpErr == nil {
+		return nil
+	}
+	helpCombined := strings.TrimSpace(string(helpOutput))
+	if strings.Contains(helpCombined, `unknown command "fix"`) {
+		return fmt.Errorf("go fix command is unavailable (output: %s)", helpCombined)
+	}
+
 	cmd := exec.Command("go", "tool", "fix", "-h")
 	output, err := cmd.CombinedOutput()
 	if err == nil {
