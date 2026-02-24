@@ -1,5 +1,5 @@
 // Package main implements the mono monorepo orchestration tool.
-package main
+package cli
 
 import (
 	"context"

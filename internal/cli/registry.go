@@ -1,4 +1,4 @@
-package main
+package cli
 
 import (
 	"context"
@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -30,8 +31,7 @@ func init() {
 }
 
 func (c *listCommand) Run(_ []string) error {
-	listServices()
-	return nil
+	return listServices()
 }
 
 // Config represents the services.yaml structure
@@ -49,45 +49,23 @@ type Service struct {
 	Commands    map[string]string `yaml:"commands"`
 }
 
-func main() {
-	if len(os.Args) < 2 {
-		printUsage()
-		os.Exit(1)
-	}
-
-	command := os.Args[1]
-
-	if cmd, ok := commands[command]; ok {
-		if err := cmd.Run(os.Args); err != nil {
-			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-			os.Exit(1)
-		}
-		os.Exit(0)
-	}
-
-	// Fallback: generic service-registry command
-	runServiceCommand(command)
-}
-
 // runServiceCommand runs a registry-defined command (test, lint, build, etc.)
 // across one or more services.
-func runServiceCommand(command string) {
+func runServiceCommand(command string, args []string) error {
 	config, err := loadConfig()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error loading config: %v\n", err)
-		os.Exit(1)
+		return fmt.Errorf("loading config: %w", err)
 	}
 
 	// Determine which services to run
 	var servicesToRun []Service
-	if len(os.Args) > 2 {
+	if len(args) > 2 {
 		// Specific services requested
-		requestedServices := os.Args[2:]
+		requestedServices := args[2:]
 		for _, name := range requestedServices {
 			svc := findService(config, name)
 			if svc == nil {
-				fmt.Fprintf(os.Stderr, "Error: unknown service '%s'\n", name)
-				os.Exit(1)
+				return fmt.Errorf("unknown service %q", name)
 			}
 			servicesToRun = append(servicesToRun, *svc)
 		}
@@ -99,10 +77,12 @@ func runServiceCommand(command string) {
 	// Execute command for each service
 	for _, svc := range servicesToRun {
 		if err := runCommand(svc, command); err != nil {
-			// Fail-fast: exit immediately on first failure
-			os.Exit(1)
+			// Fail-fast: return immediately on first failure.
+			return err
 		}
 	}
+
+	return nil
 }
 
 // loadConfig reads and parses services.yaml from the repo root
@@ -197,12 +177,11 @@ func commandFromParts(ctx context.Context, parts []string) (*exec.Cmd, error) {
 	}
 }
 
-// listServices prints all services and their available commands
-func listServices() {
+// listServices prints all services and their available commands.
+func listServices() error {
 	config, err := loadConfig()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error loading config: %v\n", err)
-		os.Exit(1)
+		return fmt.Errorf("loading config: %w", err)
 	}
 
 	fmt.Println("Available services:")
@@ -218,10 +197,11 @@ func listServices() {
 
 		fmt.Printf("    Commands: ")
 
-		var cmds []string
+		cmds := make([]string, 0, len(svc.Commands))
 		for cmdName := range svc.Commands {
 			cmds = append(cmds, cmdName)
 		}
+		sort.Strings(cmds)
 
 		if len(cmds) > 0 {
 			for i, cmd := range cmds {
@@ -246,9 +226,11 @@ func listServices() {
 			fmt.Println()
 		}
 	}
+
+	return nil
 }
 
-// printUsage prints usage information
+// printUsage prints usage information.
 func printUsage() {
 	fmt.Println("mono - Monorepo orchestration tool")
 	fmt.Println()
@@ -264,6 +246,7 @@ func printUsage() {
 	fmt.Println("  migrate <service> <subcommand>  Manage database migrations (see: mono migrate)")
 	fmt.Println("  metadata              Print spec metadata (date/git/repo/timestamp)")
 	fmt.Println("  worktree <subcommand> Manage git worktrees (see: mono worktree)")
+	fmt.Println("  --version             Print build version information")
 	fmt.Println("  <command>             Run command across services")
 	fmt.Println()
 	fmt.Println("Examples:")
