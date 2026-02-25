@@ -14,6 +14,7 @@ const (
 	TaskLint      TaskName = "lint"
 	TaskTypecheck TaskName = "typecheck"
 	TaskTest      TaskName = "test"
+	TaskAudit     TaskName = "audit"
 	TaskPackage   TaskName = "package"
 	TaskDeploy    TaskName = "deploy"
 )
@@ -23,6 +24,7 @@ var orchestratedTaskOrder = []TaskName{
 	TaskLint,
 	TaskTypecheck,
 	TaskTest,
+	TaskAudit,
 	TaskPackage,
 	TaskDeploy,
 }
@@ -32,6 +34,7 @@ var orchestratedTaskSet = map[TaskName]struct{}{
 	TaskLint:      {},
 	TaskTypecheck: {},
 	TaskTest:      {},
+	TaskAudit:     {},
 	TaskPackage:   {},
 	TaskDeploy:    {},
 }

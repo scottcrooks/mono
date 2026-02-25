@@ -8,8 +8,6 @@ import (
 )
 
 func TestCollectMetadataWithoutGit(t *testing.T) {
-	t.Parallel()
-
 	restore := snapshotMetadataGlobals()
 	t.Cleanup(restore)
 
@@ -33,8 +31,6 @@ func TestCollectMetadataWithoutGit(t *testing.T) {
 }
 
 func TestCollectMetadataWithGitFallbackBranch(t *testing.T) {
-	t.Parallel()
-
 	restore := snapshotMetadataGlobals()
 	t.Cleanup(restore)
 
@@ -75,8 +71,6 @@ func TestCollectMetadataWithGitFallbackBranch(t *testing.T) {
 }
 
 func TestFormatMetadataOutputOrderAndLabels(t *testing.T) {
-	t.Parallel()
-
 	out := formatMetadataOutput(metadataInfo{
 		DateTimeTZ: "2026-02-21 16:00:01 EST",
 		GitCommit:  "abc123",
@@ -98,8 +92,6 @@ func TestFormatMetadataOutputOrderAndLabels(t *testing.T) {
 }
 
 func TestFormatMetadataOutputOmitsEmptyGitLines(t *testing.T) {
-	t.Parallel()
-
 	out := formatMetadataOutput(metadataInfo{
 		DateTimeTZ: "2026-02-21 16:00:01 EST",
 		FilenameTS: "2026-02-21_16-00-01",

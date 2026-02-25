@@ -9,6 +9,7 @@ import (
 type TaskRunOptions struct {
 	NoCache     bool
 	Concurrency int
+	Integration bool
 }
 
 func parseTaskInvocationArgs(args []string, defaultConcurrency int) ([]string, TaskRunOptions, error) {
@@ -20,6 +21,8 @@ func parseTaskInvocationArgs(args []string, defaultConcurrency int) ([]string, T
 		switch {
 		case arg == "--no-cache":
 			opts.NoCache = true
+		case arg == "--integration":
+			opts.Integration = true
 		case arg == "--concurrency":
 			if i+1 >= len(args) {
 				return nil, opts, fmt.Errorf("--concurrency requires a value")

@@ -14,17 +14,17 @@ var taskTemplates = map[string]archetypeTemplate{
 	"go": {
 		serviceTasks: map[TaskName]string{
 			TaskBuild:     "go build ./...",
-			TaskLint:      "go test ./...",
-			TaskTypecheck: "go test ./...",
+			TaskLint:      "go tool golangci-lint run ./...",
+			TaskTypecheck: "go test -run=^$ ./...",
 			TaskTest:      "go test ./...",
+			TaskAudit:     "go tool govulncheck ./...",
 			TaskPackage:   "go build ./...",
-			TaskDeploy:    "go test ./...",
 		},
 		packageTasks: map[TaskName]string{
-			TaskBuild:   "go build ./...",
-			TaskLint:    "go test ./...",
-			TaskTest:    "go test ./...",
-			TaskPackage: "go build ./...",
+			TaskBuild: "go build ./...",
+			TaskLint:  "go tool golangci-lint run ./...",
+			TaskTest:  "go test ./...",
+			TaskAudit: "go tool govulncheck ./...",
 		},
 	},
 	"react": {
@@ -33,6 +33,7 @@ var taskTemplates = map[string]archetypeTemplate{
 			TaskLint:      "pnpm lint",
 			TaskTypecheck: "pnpm typecheck",
 			TaskTest:      "pnpm test",
+			TaskAudit:     "pnpm audit",
 			TaskPackage:   "pnpm build",
 		},
 		packageTasks: map[TaskName]string{
@@ -40,12 +41,32 @@ var taskTemplates = map[string]archetypeTemplate{
 			TaskLint:      "pnpm lint",
 			TaskTypecheck: "pnpm typecheck",
 			TaskTest:      "pnpm test",
-			TaskPackage:   "pnpm build",
+			TaskAudit:     "pnpm audit",
 		},
 	},
 }
 
 func taskCommandForService(svc Service, task TaskName) (string, bool, string) {
+	return taskCommandForServiceWithOptions(svc, task, false)
+}
+
+func taskCommandForServiceWithOptions(svc Service, task TaskName, integration bool) (string, bool, string) {
+	if integration {
+		if task != TaskTest {
+			return "", false, fmt.Sprintf("task %q does not support --integration", task)
+		}
+		switch svc.Archetype {
+		case "go":
+			return "go test -v ./...", true, ""
+		case "react":
+			return "pnpm test:integration", true, ""
+		case "":
+			return "", false, "task \"test\" is not supported (missing archetype)"
+		default:
+			return "", false, fmt.Sprintf("task %q is not supported for %s/%s", task, svc.Archetype, svc.Kind)
+		}
+	}
+
 	if tpl, ok := taskTemplates[svc.Archetype]; ok {
 		tasks := tpl.serviceTasks
 		if svc.Kind == "package" {

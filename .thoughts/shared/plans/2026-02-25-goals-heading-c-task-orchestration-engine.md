@@ -14,6 +14,21 @@ Section B capability exists (`affected`, `status`, changed/impacted computation)
 - `status` currently previews only check tasks from impacted services and does not execute anything (`internal/cli/status.go:25-36`, `internal/cli/impact.go:235-259`).
 - `services.example.yml` currently encodes arbitrary command strings per entry (`services.example.yml:5-50`), which duplicates behavior and prevents runtime-level standardization.
 
+### Implementation Checkpoint (2026-02-25)
+
+Most of Goals C is now implemented in `internal/cli`:
+
+- Recognized task verbs are routed into an orchestration path (`internal/cli/run.go:35-40`).
+- Task identity, supported vocabulary, resolution, archetype templates, DAG building, parallel scheduling, cache, and summary output exist (`internal/cli/tasks.go`, `internal/cli/task_resolution.go`, `internal/cli/task_templates.go`, `internal/cli/task_graph.go`, `internal/cli/task_executor.go`, `internal/cli/task_cache.go`, `internal/cli/task_output.go`).
+- `--no-cache` and `--concurrency` parsing are implemented (`internal/cli/task_flags.go:14-47`).
+- Goal C-focused tests exist and pass in targeted runs (`internal/cli/task_resolution_test.go`, `internal/cli/task_templates_test.go`, `internal/cli/task_executor_test.go`, `internal/cli/task_cache_test.go`, `internal/cli/task_output_test.go`).
+
+Current known gaps against the intent of section C:
+
+- Legacy arbitrary command maps are still present in schema/runtime fallback (`Service.Commands` and `runServiceCommand`) and remain available for non-task verbs (`internal/cli/registry.go:44-89`, `internal/cli/registry.go:119-159`).
+- Template semantics still need hardening to match intended task meaning and role constraints (for example, permissiveness of `package` on package kind) (`internal/cli/task_templates.go:23-44`).
+- Full `make test` is currently blocked by an unrelated metadata test failure (`internal/cli/metadata_test.go:67` observed during verification), so Goal C completion should be validated via targeted task-engine tests plus full-suite rerun after that issue is addressed.
+
 ## Desired End State
 
 After this plan is implemented:
@@ -53,6 +68,8 @@ Build a dedicated orchestration package in `internal/cli` that is decoupled into
 6. **CLI integration layer**: route recognized task verbs through orchestrator while preserving legacy behavior for non-task verbs.
 
 This sequence keeps C1/C2 stable first, then adds C3 execution correctness, then C4/C5 production quality behavior.
+
+Given the current checkpoint, phases 1-3 below are effectively implemented. The remaining work is hardening/alignment.
 
 ## Phase 1: Task Model and Resolution Contract (C1 + C2)
 
@@ -224,6 +241,55 @@ Add coarse local cache with diagnostics and finalize operator-friendly execution
 - [ ] Failure in one task produces non-zero exit and correct summary counts.
 
 **Implementation Note**: After this phase and automated checks pass, pause for final manual confirmation before starting section D work.
+
+---
+
+## Phase 4: Hardening and Goal-Intent Alignment
+
+### Overview
+
+Close remaining deltas between the implemented engine and Goal C intent, without regressing current CLI behavior.
+
+### Changes Required
+
+#### 1. Tighten template task policy by role
+**File**: `internal/cli/task_templates.go`
+**File**: `internal/cli/task_templates_test.go`
+**Changes**:
+- Enforce explicit service-only task policy where required by goals (notably `deploy`, and `package` if retained as service-only for this repo policy).
+- Replace placeholder template commands with explicit, intentional defaults per archetype and task semantics.
+- Extend tests to assert role-specific availability matrix.
+
+#### 2. Delineate orchestrated tasks from legacy custom commands
+**File**: `internal/cli/registry.go`
+**File**: `internal/cli/run.go`
+**File**: `internal/cli/registry_test.go` (new)
+**Changes**:
+- Keep fallback behavior for non-task verbs, but make boundaries explicit and tested.
+- Ensure no task-verb path can accidentally read legacy per-service command maps.
+- Document behavior in CLI usage text.
+
+#### 3. Verification stabilization
+**File**: `internal/cli/metadata_test.go` (existing)
+**Changes**:
+- Resolve/contain unrelated metadata test instability so `make test` can be used again as final gate for Goal C.
+- Add targeted regression assertions to prevent recurrence.
+
+### Success Criteria
+
+#### Automated Verification
+- [ ] Task template policy tests pass: `go test ./internal/cli -run TestTaskTemplates`
+- [ ] Task executor/resolution/cache/output tests pass: `go test ./internal/cli -run TestTask`
+- [ ] Full suite passes: `make test`
+- [ ] Full quality gate passes: `make check`
+
+#### Manual Verification
+- [ ] `mono deploy <package-project>` is rejected or skipped with explicit reason per policy.
+- [ ] `mono package <package-project>` behavior matches agreed policy and docs.
+- [ ] Non-task custom command path still works for explicitly configured legacy commands.
+- [ ] CLI usage and observed behavior are consistent for task vs non-task verbs.
+
+**Implementation Note**: After this phase and automated checks pass, pause for human confirmation on policy choices before moving to section D.
 
 ---
 

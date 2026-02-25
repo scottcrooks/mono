@@ -53,6 +53,18 @@ func TestRunMissingCommand(t *testing.T) {
 	}
 }
 
+func TestRunIntegrationFlagRejectedForNonTestTask(t *testing.T) {
+	stderr := captureStderr(t, func() {
+		code := Run([]string{"mono", "build", "--integration"})
+		if code != 1 {
+			t.Fatalf("expected exit code 1 for invalid --integration usage, got %d", code)
+		}
+	})
+	if !strings.Contains(stderr, "--integration is only supported with \"test\"") {
+		t.Fatalf("unexpected stderr: %q", stderr)
+	}
+}
+
 func captureStdout(t *testing.T, fn func()) string {
 	t.Helper()
 
@@ -75,6 +87,36 @@ func captureStdout(t *testing.T, fn func()) string {
 	var buf bytes.Buffer
 	if _, err := io.Copy(&buf, r); err != nil {
 		t.Fatalf("copy stdout: %v", err)
+	}
+	if err := r.Close(); err != nil {
+		t.Fatalf("close reader: %v", err)
+	}
+
+	return buf.String()
+}
+
+func captureStderr(t *testing.T, fn func()) string {
+	t.Helper()
+
+	oldStderr := os.Stderr
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("os.Pipe: %v", err)
+	}
+	os.Stderr = w
+	t.Cleanup(func() {
+		os.Stderr = oldStderr
+	})
+
+	fn()
+
+	if err := w.Close(); err != nil {
+		t.Fatalf("close writer: %v", err)
+	}
+
+	var buf bytes.Buffer
+	if _, err := io.Copy(&buf, r); err != nil {
+		t.Fatalf("copy stderr: %v", err)
 	}
 	if err := r.Close(); err != nil {
 		t.Fatalf("close reader: %v", err)

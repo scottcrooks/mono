@@ -30,16 +30,36 @@ func TestBuildTaskCacheKeyChangesOnContentChange(t *testing.T) {
 	mustWrite(t, filepath.Join(repo, "apps", "api", "main.go"), "package main\n")
 	svc := Service{Name: "api", Path: "apps/api", Kind: "service", Archetype: "go"}
 
-	k1, err := buildTaskCacheKey(svc, TaskBuild)
+	k1, err := buildTaskCacheKey(svc, TaskBuild, "go build ./...")
 	if err != nil {
 		t.Fatalf("buildTaskCacheKey(1): %v", err)
 	}
 	mustWrite(t, filepath.Join(repo, "apps", "api", "main.go"), "package main\n// changed\n")
-	k2, err := buildTaskCacheKey(svc, TaskBuild)
+	k2, err := buildTaskCacheKey(svc, TaskBuild, "go build ./...")
 	if err != nil {
 		t.Fatalf("buildTaskCacheKey(2): %v", err)
 	}
 	if k1 == k2 {
 		t.Fatalf("expected cache key to change when content changes")
+	}
+}
+
+func TestBuildTaskCacheKeyChangesOnCommandChange(t *testing.T) {
+	repo := t.TempDir()
+	withWorkingDir(t, repo)
+
+	mustWrite(t, filepath.Join(repo, "apps", "api", "main.go"), "package main\n")
+	svc := Service{Name: "api", Path: "apps/api", Kind: "service", Archetype: "go"}
+
+	k1, err := buildTaskCacheKey(svc, TaskTest, "go test ./...")
+	if err != nil {
+		t.Fatalf("buildTaskCacheKey(1): %v", err)
+	}
+	k2, err := buildTaskCacheKey(svc, TaskTest, "go test -v ./...")
+	if err != nil {
+		t.Fatalf("buildTaskCacheKey(2): %v", err)
+	}
+	if k1 == k2 {
+		t.Fatalf("expected cache key to change when command changes")
 	}
 }

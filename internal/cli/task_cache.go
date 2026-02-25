@@ -72,10 +72,10 @@ func cacheMissReason(noCache bool, hit bool) string {
 	return ""
 }
 
-func buildTaskCacheKey(svc Service, task TaskName) (string, error) {
+func buildTaskCacheKey(svc Service, task TaskName, command string) (string, error) {
 	h := sha256.New()
 
-	pieces := []string{string(task), svc.Name, normalizeServicePath(svc.Path)}
+	pieces := []string{string(task), command, svc.Name, normalizeServicePath(svc.Path)}
 	for _, env := range cacheEnvWhitelist {
 		pieces = append(pieces, env+"="+os.Getenv(env))
 	}

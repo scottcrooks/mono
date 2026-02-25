@@ -44,17 +44,24 @@ func runOrchestratedTask(command string, args []string) error {
 		return fmt.Errorf("unsupported task %q", command)
 	}
 
+	serviceArgs, opts, err := parseTaskInvocationArgs(args[2:], defaultTaskConcurrency())
+	if err != nil {
+		return err
+	}
+	if opts.Integration && task != TaskTest {
+		return fmt.Errorf("--integration is only supported with %q", TaskTest)
+	}
+
 	cfg, err := loadConfig()
 	if err != nil {
 		return fmt.Errorf("loading config: %w", err)
 	}
 
-	serviceArgs, opts, err := parseTaskInvocationArgs(args[2:], defaultTaskConcurrency())
-	if err != nil {
-		return err
-	}
-
-	resolution, err := resolveTaskRequest(cfg, TaskRequest{Task: task, Services: serviceArgs})
+	resolution, err := resolveTaskRequest(cfg, TaskRequest{
+		Task:        task,
+		Services:    serviceArgs,
+		Integration: opts.Integration,
+	})
 	if err != nil {
 		return err
 	}
@@ -117,12 +124,16 @@ func (e taskExecutor) execute(ctx context.Context, graph *taskGraph, opts TaskRu
 		preFailed := false
 		for _, resolved := range ready {
 			node := resolved.Node
-			baseKey, err := buildTaskCacheKey(resolved.Service, node.Task)
-			if err != nil {
-				preBatch = append(preBatch, TaskRunResult{Node: node, Status: TaskStatusFailed, Err: err})
-				preFailed = true
-				delete(remaining, node)
-				continue
+			baseKey := ""
+			if taskUsesCache(node.Task) {
+				var err error
+				baseKey, err = buildTaskCacheKey(resolved.Service, node.Task, resolved.Command)
+				if err != nil {
+					preBatch = append(preBatch, TaskRunResult{Node: node, Status: TaskStatusFailed, Err: err})
+					preFailed = true
+					delete(remaining, node)
+					continue
+				}
 			}
 			depKeys := make([]string, 0, len(graph.reverse[node]))
 			for _, dep := range graph.reverse[node] {
@@ -156,13 +167,15 @@ func (e taskExecutor) execute(ctx context.Context, graph *taskGraph, opts TaskRu
 			}
 			if result.Status == TaskStatusFailed {
 				failed = true
-				continue
+				if !continueOnFailure(result.Node.Task) {
+					continue
+				}
 			}
 			for _, next := range graph.edges[result.Node] {
 				inDegree[next]--
 			}
 		}
-		if failed {
+		if failed && !continueOnFailure(ready[0].Node.Task) {
 			for node := range remaining {
 				fmt.Printf("[%s] skipped: blocked by earlier task failure\n", node)
 				result := TaskRunResult{Node: node, Status: TaskStatusSkipped, SkipReason: "blocked by earlier task failure"}
@@ -213,6 +226,14 @@ func (e taskExecutor) runReadyBatch(ctx context.Context, ready []readyTask, opts
 
 func (e taskExecutor) runNode(ctx context.Context, task readyTask, opts TaskRunOptions) TaskRunResult {
 	node := task.resolved.Node
+	if !taskUsesCache(node.Task) {
+		cmdString := commandForExecution(task.resolved.Service, node, task.resolved.Command, opts)
+		if err := runTaskCommand(ctx, task.resolved.Service, node, cmdString); err != nil {
+			return TaskRunResult{Node: node, Status: TaskStatusFailed, Err: err}
+		}
+		return TaskRunResult{Node: node, Status: TaskStatusSucceeded}
+	}
+
 	cacheKey := task.cacheKey
 	entry, hit, err := e.cache.load(cacheKey)
 	if err != nil {
@@ -226,7 +247,8 @@ func (e taskExecutor) runNode(ctx context.Context, task readyTask, opts TaskRunO
 		fmt.Printf("[%s] cache miss: %s\n", node, reason)
 	}
 
-	if err := runTaskCommand(ctx, task.resolved.Service, node, task.resolved.Command); err != nil {
+	cmdString := commandForExecution(task.resolved.Service, node, task.resolved.Command, opts)
+	if err := runTaskCommand(ctx, task.resolved.Service, node, cmdString); err != nil {
 		return TaskRunResult{Node: node, Status: TaskStatusFailed, Err: err}
 	}
 
@@ -241,6 +263,28 @@ func (e taskExecutor) runNode(ctx context.Context, task readyTask, opts TaskRunO
 	}
 
 	return TaskRunResult{Node: node, Status: TaskStatusSucceeded}
+}
+
+func taskUsesCache(task TaskName) bool {
+	return task != TaskAudit
+}
+
+func continueOnFailure(task TaskName) bool {
+	return task == TaskAudit
+}
+
+func commandForExecution(svc Service, node TaskNode, command string, opts TaskRunOptions) string {
+	if !opts.NoCache {
+		return command
+	}
+	if node.Task != TaskTest || svc.Archetype != "go" {
+		return command
+	}
+	trimmed := strings.TrimSpace(command)
+	if !strings.HasPrefix(trimmed, "go test") || strings.Contains(trimmed, "-count=") {
+		return command
+	}
+	return trimmed + " -count=1"
 }
 
 func composeExecutionCacheKey(baseKey string, dependencyKeys []string) string {

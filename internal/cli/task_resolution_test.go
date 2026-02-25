@@ -53,3 +53,19 @@ func TestResolveTaskRequestUnsupportedTaskMarksSkipped(t *testing.T) {
 		t.Fatalf("expected unsupported task to be skipped")
 	}
 }
+
+func TestResolveTaskRequestIntegrationUsesIntegrationCommand(t *testing.T) {
+	t.Parallel()
+
+	cfg := &Config{Services: []Service{{Name: "api", Path: "apps/api", Kind: "service", Archetype: "go"}}}
+	resolved, err := resolveTaskRequest(cfg, TaskRequest{Task: TaskTest, Integration: true})
+	if err != nil {
+		t.Fatalf("resolveTaskRequest error: %v", err)
+	}
+	if len(resolved.Nodes) != 1 {
+		t.Fatalf("expected one node")
+	}
+	if resolved.Nodes[0].Command != "go test -v ./..." {
+		t.Fatalf("unexpected integration command: %q", resolved.Nodes[0].Command)
+	}
+}

@@ -6,8 +6,9 @@ import (
 )
 
 type TaskRequest struct {
-	Task     TaskName
-	Services []string
+	Task        TaskName
+	Services    []string
+	Integration bool
 }
 
 type ResolvedTaskNode struct {
@@ -38,7 +39,7 @@ func resolveTaskRequest(cfg *Config, req TaskRequest) (*TaskResolution, error) {
 			Node:    TaskNode{Service: svc.Name, Task: req.Task},
 			Service: svc,
 		}
-		if cmd, ok, reason := taskCommandForService(svc, req.Task); ok {
+		if cmd, ok, reason := taskCommandForServiceWithOptions(svc, req.Task, req.Integration); ok {
 			node.Command = cmd
 		} else {
 			node.SkipReason = reason
