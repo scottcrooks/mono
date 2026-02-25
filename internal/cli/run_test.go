@@ -11,8 +11,6 @@ import (
 )
 
 func TestRunHelpFlag(t *testing.T) {
-	t.Parallel()
-
 	code := Run([]string{"mono", "--help"})
 	if code != 0 {
 		t.Fatalf("expected exit code 0 for --help, got %d", code)
@@ -20,8 +18,6 @@ func TestRunHelpFlag(t *testing.T) {
 }
 
 func TestRunVersionFlag(t *testing.T) {
-	t.Parallel()
-
 	prevVersion, prevCommit, prevDate := version.Version, version.Commit, version.Date
 	version.Version = "v1.2.3"
 	version.Commit = "abc123"
@@ -51,8 +47,6 @@ func TestRunVersionFlag(t *testing.T) {
 }
 
 func TestRunMissingCommand(t *testing.T) {
-	t.Parallel()
-
 	code := Run([]string{"mono"})
 	if code != 1 {
 		t.Fatalf("expected exit code 1 for missing command, got %d", code)

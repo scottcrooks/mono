@@ -45,7 +45,10 @@ type Service struct {
 	Name        string            `yaml:"name"`
 	Path        string            `yaml:"path"`
 	Description string            `yaml:"description"`
+	Kind        string            `yaml:"kind"`
+	Archetype   string            `yaml:"archetype"`
 	Depends     []string          `yaml:"depends"`
+	Dev         string            `yaml:"dev"`
 	Commands    map[string]string `yaml:"commands"`
 }
 
@@ -116,6 +119,10 @@ func findService(config *Config, name string) *Service {
 // runCommand executes a command for a specific service
 func runCommand(svc Service, command string) error {
 	cmdString, exists := svc.Commands[command]
+	if !exists && command == "dev" && strings.TrimSpace(svc.Dev) != "" {
+		cmdString = svc.Dev
+		exists = true
+	}
 	if !exists {
 		fmt.Printf("⊘ [%s] skipping (no '%s' command defined)\n", svc.Name, command)
 		return nil
@@ -197,9 +204,15 @@ func listServices() error {
 
 		fmt.Printf("    Commands: ")
 
-		cmds := make([]string, 0, len(svc.Commands))
+		cmds := make([]string, 0, len(svc.Commands)+len(orchestratedTaskOrder)+1)
+		for _, task := range availableTasksForService(svc) {
+			cmds = append(cmds, task)
+		}
 		for cmdName := range svc.Commands {
 			cmds = append(cmds, cmdName)
+		}
+		if strings.TrimSpace(svc.Dev) != "" {
+			cmds = append(cmds, "dev")
 		}
 		sort.Strings(cmds)
 
@@ -249,7 +262,9 @@ func printUsage() {
 	fmt.Println("  metadata              Print spec metadata (date/git/repo/timestamp)")
 	fmt.Println("  worktree <subcommand> Manage git worktrees (see: mono worktree)")
 	fmt.Println("  --version             Print build version information")
-	fmt.Println("  <command>             Run command across services")
+	fmt.Println("  <task> [--no-cache] [--concurrency N] [service...]")
+	fmt.Println("                        Run orchestrated tasks across services (build/lint/typecheck/test/package/deploy)")
+	fmt.Println("  <command>             Run custom command across services")
 	fmt.Println()
 	fmt.Println("Examples:")
 	fmt.Println("  mono test             Run tests for all services")

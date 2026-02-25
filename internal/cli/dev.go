@@ -43,7 +43,7 @@ func (c *devCommand) Run(args []string) error {
 	} else {
 		// Run all services that have dev commands
 		for _, svc := range config.Services {
-			if _, hasDevCommand := svc.Commands["dev"]; hasDevCommand {
+			if hasDevCommand(svc) {
 				servicesToRun = append(servicesToRun, svc)
 			}
 		}
@@ -171,6 +171,10 @@ func ensureInfraDeps(config *Config, services []Service) error {
 func runServiceDev(ctx context.Context, svc Service) error {
 	cmdString, exists := svc.Commands["dev"]
 	if !exists {
+		cmdString = strings.TrimSpace(svc.Dev)
+		exists = cmdString != ""
+	}
+	if !exists {
 		return fmt.Errorf("no 'dev' command defined for service %s", svc.Name)
 	}
 
@@ -250,6 +254,13 @@ func runServiceDev(ctx context.Context, svc Service) error {
 		fmt.Printf("[%s] Exited\n", svc.Name)
 		return nil
 	}
+}
+
+func hasDevCommand(svc Service) bool {
+	if _, ok := svc.Commands["dev"]; ok {
+		return true
+	}
+	return strings.TrimSpace(svc.Dev) != ""
 }
 
 // PrefixWriter wraps an io.Writer and prefixes each line with a service name

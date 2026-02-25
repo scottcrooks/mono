@@ -244,7 +244,9 @@ func buildCheckTaskPreview(cfg *Config, impacted []string) []CheckTaskPreview {
 			Service: name,
 		}
 		for _, cmd := range required {
-			if _, ok := svc.Commands[cmd]; ok {
+			task := TaskName(cmd)
+			_, supported, _ := taskCommandForService(*svc, task)
+			if supported {
 				row.Present = append(row.Present, cmd)
 			} else {
 				row.Missing = append(row.Missing, cmd)

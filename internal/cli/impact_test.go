@@ -141,8 +141,8 @@ func TestBuildCheckTaskPreview(t *testing.T) {
 
 	cfg := &Config{
 		Services: []Service{
-			{Name: "lib", Commands: map[string]string{"lint": "x", "test": "x"}},
-			{Name: "api", Commands: map[string]string{"lint": "x", "typecheck": "x", "test": "x"}},
+			{Name: "lib", Kind: "package", Archetype: "go"},
+			{Name: "api", Kind: "service", Archetype: "go"},
 		},
 	}
 

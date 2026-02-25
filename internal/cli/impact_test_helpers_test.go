@@ -28,25 +28,20 @@ func writeServicesConfig(t *testing.T, repo string) {
   - name: lib
     path: libs/lib
     description: Shared library
-    commands:
-      lint: go test ./...
-      test: go test ./...
+    kind: package
+    archetype: go
   - name: api
     path: apps/api
     description: API service
+    kind: service
+    archetype: go
     depends: [lib]
-    commands:
-      lint: go test ./...
-      typecheck: go test ./...
-      test: go test ./...
   - name: web
     path: apps/web
     description: Web service
+    kind: service
+    archetype: go
     depends: [api]
-    commands:
-      lint: go test ./...
-      typecheck: go test ./...
-      test: go test ./...
 `
 	writeFile(t, repo, "services.yaml", content)
 }

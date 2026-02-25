@@ -2,52 +2,30 @@ services:
     - name: polaris
       path: packages/polaris
       description: Shared Go kernel library
-      commands:
-          reqs: go mod download
-          test: go test -v ./...
-          lint: go tool golangci-lint run ./...
-          build: go build ./...
-          audit: go tool govulncheck ./...
+      kind: package
+      archetype: go
 
     - name: pythia
       path: apps/pythia
       description: Go backend API
+      kind: service
+      archetype: go
+      dev: go run github.com/air-verse/air@latest -c .air.toml
       depends: [postgres]
-      commands:
-          reqs: go mod download
-          test: go test -short -v ./...
-          test-integration: go test -v ./...
-          lint: go tool golangci-lint run ./...
-          build: go build ./...
-          audit: go tool govulncheck ./...
-          run: go run ./cmd/api
-          dev: go run github.com/air-verse/air@latest -c .air.toml
 
     - name: mallos
       path: apps/mallos
       description: React frontend
-      commands:
-          reqs: pnpm install
-          test: pnpm test
-          lint: pnpm lint
-          test-integration: npx playwright test
-          build: pnpm build
-          audit: pnpm audit --prod
-          run: pnpm dev
-          dev: pnpm dev
+      kind: service
+      archetype: react
+      dev: pnpm dev
 
     - name: daedalus
       path: apps/daedalus
       description: React admin frontend
-      commands:
-          reqs: pnpm install
-          test: pnpm test
-          test-integration: npx playwright test
-          lint: pnpm lint
-          build: pnpm build
-          audit: pnpm audit --prod
-          run: pnpm dev
-          dev: pnpm dev
+      kind: service
+      archetype: react
+      dev: pnpm dev
 
 local:
     namespace: argus-local

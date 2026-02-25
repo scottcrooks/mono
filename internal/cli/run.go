@@ -32,6 +32,14 @@ func Run(args []string) int {
 		return 0
 	}
 
+	if _, ok := parseTaskName(command); ok {
+		if err := runOrchestratedTask(command, args); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			return 1
+		}
+		return 0
+	}
+
 	if err := runServiceCommand(command, args); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		return 1
