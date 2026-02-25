@@ -115,29 +115,41 @@ func (c *doctorCommand) Run(_ []string) error {
 
 	// Install Go tools from go.mod
 	fmt.Println("📦 Installing Go tools from go.mod...")
-	if err := installGoTools(); err != nil {
-		fmt.Fprintf(os.Stderr, "  ✗ Failed to install Go tools: %v\n", err)
-		return err
+	if !fileExists("go.mod") {
+		fmt.Println("  ⚠ Warning: go.mod not found; skipping Go tool installation")
+	} else {
+		if err := installGoTools(); err != nil {
+			fmt.Fprintf(os.Stderr, "  ✗ Failed to install Go tools: %v\n", err)
+			return err
+		}
+		fmt.Println("  ✓ Go tools installed")
 	}
-	fmt.Println("  ✓ Go tools installed")
 	fmt.Println()
 
 	// Install pnpm dependencies
 	fmt.Println("📦 Installing pnpm dependencies...")
-	pnpmCmd := exec.Command("pnpm", "install", "--frozen-lockfile")
-	pnpmCmd.Stdout = os.Stdout
-	pnpmCmd.Stderr = os.Stderr
-	if err := pnpmCmd.Run(); err != nil {
-		fmt.Fprintf(os.Stderr, "  ✗ Failed to install pnpm dependencies: %v\n", err)
-		return err
+	if !fileExists("package.json") {
+		fmt.Println("  ⚠ Warning: package.json not found; skipping pnpm install")
+	} else {
+		pnpmCmd := exec.Command("pnpm", "install", "--frozen-lockfile")
+		pnpmCmd.Stdout = os.Stdout
+		pnpmCmd.Stderr = os.Stderr
+		if err := pnpmCmd.Run(); err != nil {
+			fmt.Fprintf(os.Stderr, "  ✗ Failed to install pnpm dependencies: %v\n", err)
+			return err
+		}
+		fmt.Println("  ✓ pnpm dependencies installed")
 	}
-	fmt.Println("  ✓ pnpm dependencies installed")
 	fmt.Println()
 
 	// Verify mono tool
 	fmt.Println("🔧 Verifying mono tool...")
-	if err := listServices(); err != nil {
-		return err
+	if !fileExists("services.yaml") {
+		fmt.Println("  ⚠ Warning: services.yaml not found; skipping service verification")
+	} else {
+		if err := listServices(); err != nil {
+			return err
+		}
 	}
 	fmt.Println()
 
@@ -300,4 +312,9 @@ func installGitHooks() error {
 	}
 
 	return nil
+}
+
+func fileExists(path string) bool {
+	_, err := os.Stat(path)
+	return err == nil
 }

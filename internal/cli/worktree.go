@@ -627,6 +627,10 @@ func runWorktreeRequirements(worktreePath string) error {
 	configPath := filepath.Join(worktreePath, "services.yaml")
 	data, err := os.ReadFile(configPath)
 	if err != nil {
+		if os.IsNotExist(err) {
+			fmt.Println("[warn] services.yaml not found; skipping worktree requirements")
+			return nil
+		}
 		return fmt.Errorf("failed to read %s: %w", configPath, err)
 	}
 

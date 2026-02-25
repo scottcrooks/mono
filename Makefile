@@ -10,7 +10,15 @@ export GOTOOLCHAIN ?= auto
 GOFILES := $(shell find . -type f -name '*.go' -not -path './vendor/*' -not -path './.cache/*')
 MONO_SRCS := $(shell find cmd/mono internal -type f -name '*.go')
 MONO_EXTRA_DEPS := $(wildcard services.yaml)
-VERSION ?= $(shell git describe --tags --exact-match 2>/dev/null || git describe --tags --always --dirty 2>/dev/null || echo dev)
+VERSION ?= $(shell \
+	semver_tag=$$(git tag --points-at HEAD --list 'v*' | sort -V | tail -n1); \
+	if [ -n "$$semver_tag" ]; then \
+		echo $$semver_tag; \
+	else \
+		git describe --tags --exact-match 2>/dev/null || \
+		git describe --tags --always --dirty 2>/dev/null || \
+		echo dev; \
+	fi)
 COMMIT ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo none)
 DATE ?= $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
 LDFLAGS := -X github.com/scottcrooks/mono/internal/version.Version=$(VERSION) -X github.com/scottcrooks/mono/internal/version.Commit=$(COMMIT) -X github.com/scottcrooks/mono/internal/version.Date=$(DATE)

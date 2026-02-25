@@ -70,6 +70,15 @@ func TestParseCreateArgsInvalidID(t *testing.T) {
 	}
 }
 
+func TestRunWorktreeRequirementsMissingServicesYAML(t *testing.T) {
+	t.Parallel()
+
+	worktreePath := t.TempDir()
+	if err := runWorktreeRequirements(worktreePath); err != nil {
+		t.Fatalf("expected missing services.yaml to be skipped, got error: %v", err)
+	}
+}
+
 func TestParseRemoveArgs(t *testing.T) {
 	t.Parallel()
 
