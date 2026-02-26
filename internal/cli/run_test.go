@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bytes"
+	"errors"
 	"io"
 	"os"
 	"reflect"
@@ -97,6 +98,51 @@ func TestRegisterCommandsExpectedSet(t *testing.T) {
 	}
 }
 
+func TestRunReturnsTypedExitCodeFromCommand(t *testing.T) {
+	prevRegistry, prevRegistered := registry, commandsRegistered
+	registry = core.NewRegistry()
+	commandsRegistered = true
+	registry.Register("validate", stubCommand{err: core.NewExitCodeError(core.ExitCodeValidation, "validation failed")})
+	t.Cleanup(func() {
+		registry = prevRegistry
+		commandsRegistered = prevRegistered
+	})
+
+	stderr := captureStderr(t, func() {
+		code := Run([]string{"mono", "validate"})
+		if code != core.ExitCodeValidation {
+			t.Fatalf("expected exit code %d, got %d", core.ExitCodeValidation, code)
+		}
+	})
+	if !strings.Contains(stderr, "validation failed") {
+		t.Fatalf("expected validation failure output, got %q", stderr)
+	}
+	if strings.Contains(stderr, "Error:") {
+		t.Fatalf("typed errors should not be prefixed with Error:, got %q", stderr)
+	}
+}
+
+func TestRunReturnsGenericCodeForNormalError(t *testing.T) {
+	prevRegistry, prevRegistered := registry, commandsRegistered
+	registry = core.NewRegistry()
+	commandsRegistered = true
+	registry.Register("explode", stubCommand{err: errors.New("boom")})
+	t.Cleanup(func() {
+		registry = prevRegistry
+		commandsRegistered = prevRegistered
+	})
+
+	stderr := captureStderr(t, func() {
+		code := Run([]string{"mono", "explode"})
+		if code != 1 {
+			t.Fatalf("expected exit code 1, got %d", code)
+		}
+	})
+	if !strings.Contains(stderr, "Error: boom") {
+		t.Fatalf("expected generic error output, got %q", stderr)
+	}
+}
+
 func captureStdout(t *testing.T, fn func()) string {
 	t.Helper()
 
@@ -155,4 +201,12 @@ func captureStderr(t *testing.T, fn func()) string {
 	}
 
 	return buf.String()
+}
+
+type stubCommand struct {
+	err error
+}
+
+func (s stubCommand) Run(_ []string) error {
+	return s.err
 }

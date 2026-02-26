@@ -50,6 +50,10 @@ func Run(args []string) int {
 	command := args[1]
 	if cmd, ok := registry.Lookup(command); ok {
 		if err := cmd.Run(args); err != nil {
+			if codeErr, ok := core.AsExitCodeError(err); ok {
+				fmt.Fprintln(os.Stderr, codeErr.Error())
+				return codeErr.ExitCode()
+			}
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			return 1
 		}
@@ -58,6 +62,10 @@ func Run(args []string) int {
 
 	if _, ok := tasks.ParseTaskName(command); ok {
 		if err := tasks.RunOrchestratedTask(command, args); err != nil {
+			if codeErr, ok := core.AsExitCodeError(err); ok {
+				fmt.Fprintln(os.Stderr, codeErr.Error())
+				return codeErr.ExitCode()
+			}
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			return 1
 		}
@@ -65,6 +73,10 @@ func Run(args []string) int {
 	}
 
 	if err := core.RunServiceCommand(command, args); err != nil {
+		if codeErr, ok := core.AsExitCodeError(err); ok {
+			fmt.Fprintln(os.Stderr, codeErr.Error())
+			return codeErr.ExitCode()
+		}
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		return 1
 	}

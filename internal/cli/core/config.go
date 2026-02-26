@@ -19,10 +19,48 @@ type Service struct {
 	Path        string            `yaml:"path"`
 	Description string            `yaml:"description"`
 	Kind        string            `yaml:"kind"`
+	Type        string            `yaml:"type"`
 	Archetype   string            `yaml:"archetype"`
+	Runtime     string            `yaml:"runtime"`
+	Owner       string            `yaml:"owner"`
 	Depends     []string          `yaml:"depends"`
 	Dev         string            `yaml:"dev"`
 	Commands    map[string]string `yaml:"commands"`
+	Deploy      *DeploySpec       `yaml:"deploy"`
+}
+
+// DeploySpec defines minimal deploy contract settings for a service.
+type DeploySpec struct {
+	ContainerPort int             `yaml:"containerPort"`
+	Probes        *ProbeGroupSpec `yaml:"probes"`
+	Resources     *ResourcesSpec  `yaml:"resources"`
+	Ingress       *IngressSpec    `yaml:"ingress"`
+	Env           map[string]any  `yaml:"env"`
+	Extra         map[string]any  `yaml:",inline"`
+}
+
+// ProbeGroupSpec groups readiness and liveness probes.
+type ProbeGroupSpec struct {
+	Readiness *ProbeSpec `yaml:"readiness"`
+	Liveness  *ProbeSpec `yaml:"liveness"`
+}
+
+// ProbeSpec defines a simple HTTP probe contract.
+type ProbeSpec struct {
+	Path string `yaml:"path"`
+	Port int    `yaml:"port"`
+}
+
+// ResourcesSpec defines request/limit presence for deploy policy validation.
+type ResourcesSpec struct {
+	Requests map[string]string `yaml:"requests"`
+	Limits   map[string]string `yaml:"limits"`
+}
+
+// IngressSpec defines minimal ingress configuration.
+type IngressSpec struct {
+	Enabled bool   `yaml:"enabled"`
+	Host    string `yaml:"host"`
 }
 
 // InfraSpec contains the infrastructure configuration.
