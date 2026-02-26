@@ -69,3 +69,24 @@ func TestResolveTaskRequestIntegrationUsesIntegrationCommand(t *testing.T) {
 		t.Fatalf("unexpected integration command: %q", resolved.Nodes[0].Command)
 	}
 }
+
+func TestResolveTaskRequestExactServicesSkipsDependencyClosure(t *testing.T) {
+	t.Parallel()
+
+	cfg := &Config{Services: []Service{
+		{Name: "lib", Path: "libs/lib", Kind: "package", Archetype: "go"},
+		{Name: "api", Path: "apps/api", Kind: "service", Archetype: "go", Depends: []string{"lib"}},
+	}}
+
+	resolved, err := resolveTaskRequest(cfg, TaskRequest{
+		Task:          TaskLint,
+		Services:      []string{"api"},
+		ExactServices: true,
+	})
+	if err != nil {
+		t.Fatalf("resolveTaskRequest error: %v", err)
+	}
+	if len(resolved.Nodes) != 1 || resolved.Nodes[0].Node.Service != "api" {
+		t.Fatalf("expected only api in exact mode, got %+v", resolved.Nodes)
+	}
+}

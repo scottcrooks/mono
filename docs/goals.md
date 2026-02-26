@@ -106,10 +106,10 @@ Use this as a validation grid against your PoC.
 # D. Developer Experience Workflows
 
 ## D1. Local PR Gate
-- [ ] `mono check` runs impacted:
-  - [ ] lint
-  - [ ] typecheck
-  - [ ] unit tests
+- [x] `mono check` runs impacted:
+  - [x] lint
+  - [x] typecheck
+  - [x] unit tests
 
 ## D2. Targeted Execution
 - [ ] `mono test <project>` runs for that project

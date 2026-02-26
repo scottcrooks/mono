@@ -158,3 +158,32 @@ func TestBuildCheckTaskPreview(t *testing.T) {
 		t.Fatalf("unexpected second row: %+v", rows[1])
 	}
 }
+
+func TestBuildPendingCheckPlan(t *testing.T) {
+	t.Parallel()
+
+	cfg := &Config{
+		Services: []Service{
+			{Name: "lib", Kind: "package", Archetype: "go"},
+			{Name: "api", Kind: "service", Archetype: "go"},
+		},
+	}
+
+	plan := buildPendingCheckPlan(cfg, []string{"lib", "api"})
+	if !reflect.DeepEqual(plan.ImpactedServices, []string{"lib", "api"}) {
+		t.Fatalf("unexpected impacted services: %v", plan.ImpactedServices)
+	}
+
+	if len(plan.Phases) != 3 {
+		t.Fatalf("expected 3 phases, got %d", len(plan.Phases))
+	}
+	if plan.Phases[0].Task != TaskLint || !reflect.DeepEqual(plan.Phases[0].Services, []string{"api", "lib"}) {
+		t.Fatalf("unexpected lint phase: %+v", plan.Phases[0])
+	}
+	if plan.Phases[1].Task != TaskTypecheck || !reflect.DeepEqual(plan.Phases[1].Services, []string{"api"}) {
+		t.Fatalf("unexpected typecheck phase: %+v", plan.Phases[1])
+	}
+	if plan.Phases[2].Task != TaskTest || !reflect.DeepEqual(plan.Phases[2].Services, []string{"api", "lib"}) {
+		t.Fatalf("unexpected test phase: %+v", plan.Phases[2])
+	}
+}

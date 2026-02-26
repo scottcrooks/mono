@@ -20,6 +20,16 @@ type CheckTaskPreview struct {
 	Missing []string
 }
 
+type CheckTaskPhase struct {
+	Task     TaskName
+	Services []string
+}
+
+type PendingCheckPlan struct {
+	ImpactedServices []string
+	Phases           []CheckTaskPhase
+}
+
 func buildImpactReport(cfg *Config, baseFlag string, includeExplain bool) (*ImpactReport, error) {
 	baseRef, err := resolveBaseRef(baseFlag)
 	if err != nil {
@@ -258,6 +268,42 @@ func buildCheckTaskPreview(cfg *Config, impacted []string) []CheckTaskPreview {
 		return rows[i].Service < rows[j].Service
 	})
 	return rows
+}
+
+func buildPendingCheckPlan(cfg *Config, impacted []string) PendingCheckPlan {
+	preview := buildCheckTaskPreview(cfg, impacted)
+
+	phaseTasks := []TaskName{TaskLint, TaskTypecheck, TaskTest}
+	phaseServices := map[TaskName][]string{
+		TaskLint:      {},
+		TaskTypecheck: {},
+		TaskTest:      {},
+	}
+
+	for _, row := range preview {
+		for _, taskName := range row.Present {
+			task := TaskName(taskName)
+			if _, ok := phaseServices[task]; !ok {
+				continue
+			}
+			phaseServices[task] = append(phaseServices[task], row.Service)
+		}
+	}
+
+	phases := make([]CheckTaskPhase, 0, len(phaseTasks))
+	for _, task := range phaseTasks {
+		services := append([]string(nil), phaseServices[task]...)
+		sort.Strings(services)
+		phases = append(phases, CheckTaskPhase{
+			Task:     task,
+			Services: services,
+		})
+	}
+
+	return PendingCheckPlan{
+		ImpactedServices: append([]string(nil), impacted...),
+		Phases:           phases,
+	}
 }
 
 func sortedKeys[T any](set map[string]T) []string {

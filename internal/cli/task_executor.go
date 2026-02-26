@@ -57,27 +57,31 @@ func runOrchestratedTask(command string, args []string) error {
 		return fmt.Errorf("loading config: %w", err)
 	}
 
-	resolution, err := resolveTaskRequest(cfg, TaskRequest{
+	results, err := runOrchestratedTaskRequestWithConfig(cfg, TaskRequest{
 		Task:        task,
 		Services:    serviceArgs,
 		Integration: opts.Integration,
-	})
-	if err != nil {
-		return err
-	}
-
-	graph, err := buildTaskGraph(cfg, resolution.Nodes)
-	if err != nil {
-		return err
-	}
-
-	executor := newTaskExecutor()
-	results, err := executor.execute(context.Background(), graph, opts)
+	}, opts)
 	printTaskSummary(results)
 	if err != nil {
 		return err
 	}
 	return nil
+}
+
+func runOrchestratedTaskRequestWithConfig(cfg *Config, req TaskRequest, opts TaskRunOptions) ([]TaskRunResult, error) {
+	resolution, err := resolveTaskRequest(cfg, req)
+	if err != nil {
+		return nil, err
+	}
+
+	graph, err := buildTaskGraph(cfg, resolution.Nodes)
+	if err != nil {
+		return nil, err
+	}
+
+	executor := newTaskExecutor()
+	return executor.execute(context.Background(), graph, opts)
 }
 
 func (e taskExecutor) execute(ctx context.Context, graph *taskGraph, opts TaskRunOptions) ([]TaskRunResult, error) {

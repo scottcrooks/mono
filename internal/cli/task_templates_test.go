@@ -1,6 +1,9 @@
 package cli
 
-import "testing"
+import (
+	"path/filepath"
+	"testing"
+)
 
 func TestTaskTemplatesServiceVsPackage(t *testing.T) {
 	t.Parallel()
@@ -41,11 +44,19 @@ func TestAvailableTasksForUnknownArchetype(t *testing.T) {
 }
 
 func TestTaskTemplateCommandsAreIntentional(t *testing.T) {
-	t.Parallel()
+	repo := t.TempDir()
+	withWorkingDir(t, repo)
+	writeFile(t, repo, filepath.Join("apps", "web", "package.json"), `{
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "audit": "pnpm audit"
+  }
+}
+`)
 
 	goService := Service{Name: "api", Kind: "service", Archetype: "go"}
 	goPkg := Service{Name: "lib", Kind: "package", Archetype: "go"}
-	reactService := Service{Name: "web", Kind: "service", Archetype: "react"}
+	reactService := Service{Name: "web", Kind: "service", Archetype: "react", Path: "apps/web"}
 
 	cases := []struct {
 		svc  Service
@@ -68,5 +79,28 @@ func TestTaskTemplateCommandsAreIntentional(t *testing.T) {
 		if got != tc.want {
 			t.Fatalf("unexpected command for %s %s: got %q want %q", tc.svc.Name, tc.task, got, tc.want)
 		}
+	}
+}
+
+func TestReactTaskSupportRequiresScript(t *testing.T) {
+	repo := t.TempDir()
+	withWorkingDir(t, repo)
+
+	writeFile(t, repo, filepath.Join("apps", "web", "package.json"), `{
+  "scripts": {
+    "lint": "eslint ."
+  }
+}
+`)
+
+	reactService := Service{Name: "web", Kind: "service", Archetype: "react", Path: "apps/web"}
+
+	if _, ok, _ := taskCommandForService(reactService, TaskLint); !ok {
+		t.Fatalf("expected lint to be supported when script exists")
+	}
+	if _, ok, reason := taskCommandForService(reactService, TaskTypecheck); ok {
+		t.Fatalf("expected typecheck to be skipped when script is missing")
+	} else if reason == "" {
+		t.Fatalf("expected skip reason when typecheck script is missing")
 	}
 }

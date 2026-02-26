@@ -54,3 +54,32 @@ func TestRunNonTaskVerbUsesLegacyCommandMap(t *testing.T) {
 		t.Fatalf("expected custom non-task command to use legacy command map and succeed, got %d", code)
 	}
 }
+
+func TestRunCheckVerbUsesCheckCommand(t *testing.T) {
+	repo := initTestGitRepo(t)
+	withWorkingDir(t, repo)
+
+	mustWrite(t, filepath.Join(repo, "apps", "svc", "README.md"), "placeholder\n")
+	mustWrite(t, filepath.Join(repo, "services.yaml"), `services:
+  - name: svc
+    path: apps/svc
+    description: test service
+    kind: service
+    archetype: unknown
+    commands:
+      check: go definitely-not-a-command
+`)
+	gitRun(t, repo, "add", ".")
+	gitRun(t, repo, "commit", "-m", "initial")
+
+	stdout := captureStdout(t, func() {
+		code := Run([]string{"mono", "check", "--base", "HEAD"})
+		if code != 0 {
+			t.Fatalf("expected check command to return success on no impacted services, got %d", code)
+		}
+	})
+
+	if !strings.Contains(stdout, "No impacted services. Nothing to check.") {
+		t.Fatalf("unexpected output: %q", stdout)
+	}
+}

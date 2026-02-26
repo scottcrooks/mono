@@ -6,9 +6,10 @@ import (
 )
 
 type TaskRequest struct {
-	Task        TaskName
-	Services    []string
-	Integration bool
+	Task          TaskName
+	Services      []string
+	ExactServices bool
+	Integration   bool
 }
 
 type ResolvedTaskNode struct {
@@ -28,7 +29,7 @@ func resolveTaskRequest(cfg *Config, req TaskRequest) (*TaskResolution, error) {
 		return nil, fmt.Errorf("unsupported task %q", req.Task)
 	}
 
-	selected, err := selectServicesWithDependencyClosure(cfg, req.Services)
+	selected, err := selectServicesForRequest(cfg, req.Services, req.ExactServices)
 	if err != nil {
 		return nil, err
 	}
@@ -52,6 +53,13 @@ func resolveTaskRequest(cfg *Config, req TaskRequest) (*TaskResolution, error) {
 	})
 
 	return &TaskResolution{Task: req.Task, Nodes: nodes}, nil
+}
+
+func selectServicesForRequest(cfg *Config, requested []string, exact bool) ([]Service, error) {
+	if exact {
+		return selectServicesExact(cfg, requested)
+	}
+	return selectServicesWithDependencyClosure(cfg, requested)
 }
 
 func selectServicesWithDependencyClosure(cfg *Config, requested []string) ([]Service, error) {
@@ -92,4 +100,32 @@ func selectServicesWithDependencyClosure(cfg *Config, requested []string) ([]Ser
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	return out, nil
+}
+
+func selectServicesExact(cfg *Config, requested []string) ([]Service, error) {
+	if len(requested) == 0 {
+		return []Service{}, nil
+	}
+
+	index := make(map[string]Service, len(cfg.Services))
+	for _, svc := range cfg.Services {
+		index[svc.Name] = svc
+	}
+
+	selected := make([]Service, 0, len(requested))
+	seen := make(map[string]struct{}, len(requested))
+	for _, name := range requested {
+		if _, dup := seen[name]; dup {
+			continue
+		}
+		svc, ok := index[name]
+		if !ok {
+			return nil, fmt.Errorf("unknown service %q", name)
+		}
+		selected = append(selected, svc)
+		seen[name] = struct{}{}
+	}
+
+	sort.Slice(selected, func(i, j int) bool { return selected[i].Name < selected[j].Name })
+	return selected, nil
 }
