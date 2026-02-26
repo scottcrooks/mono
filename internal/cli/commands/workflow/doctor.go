@@ -3,10 +3,14 @@ package workflow
 import (
 	"bufio"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+
+	"github.com/scottcrooks/mono/internal/cli/core"
+	"github.com/scottcrooks/mono/internal/cli/validation"
 )
 
 type doctorCommand struct{}
@@ -148,6 +152,10 @@ func (c *doctorCommand) Run(_ []string) error {
 		fmt.Println("  ⚠ Warning: services.yaml not found; skipping service verification")
 	} else {
 		if err := listServices(); err != nil {
+			return err
+		}
+		fmt.Println()
+		if err := validateManifestForDoctor("services.yaml", os.Stdout); err != nil {
 			return err
 		}
 	}
@@ -317,4 +325,36 @@ func installGitHooks() error {
 func fileExists(path string) bool {
 	_, err := os.Stat(path)
 	return err == nil
+}
+
+func validateManifestForDoctor(path string, out io.Writer) error {
+	fmt.Fprintln(out, "🧭 Validating manifest policy...")
+	report, err := validation.ValidateServicesManifest(path)
+	if err != nil {
+		return err
+	}
+
+	fmt.Fprintf(out, "  Summary: %d error(s), %d warning(s)\n", report.ErrorCount(), report.WarningCount())
+	if len(report.Diagnostics) == 0 {
+		fmt.Fprintln(out, "  ✓ Manifest policy checks passed")
+		return nil
+	}
+
+	for _, diag := range report.Diagnostics {
+		level := strings.ToUpper(string(diag.Severity))
+		if level == "" {
+			level = "ERROR"
+		}
+		if diag.Line > 0 {
+			fmt.Fprintf(out, "    - [%s] [%s] %s:%d:%d %s\n", level, diag.Code, diag.Path, diag.Line, diag.Column, diag.Message)
+			continue
+		}
+		fmt.Fprintf(out, "    - [%s] [%s] %s %s\n", level, diag.Code, diag.Path, diag.Message)
+	}
+	if !report.HasErrors() {
+		fmt.Fprintln(out, "  ✓ Manifest policy checks passed with warnings")
+		return nil
+	}
+
+	return core.NewExitCodeError(core.ExitCodeValidation, fmt.Sprintf("manifest validation failed with %d error(s)", report.ErrorCount()))
 }

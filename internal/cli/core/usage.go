@@ -14,7 +14,7 @@ func PrintUsage() {
 	fmt.Println("  list                  List all services and their commands")
 	fmt.Println("  status [--base <ref>] Show changed/impacted services and planned check tasks")
 	fmt.Println("  dev [service...]      Run services with hot reload (concurrent)")
-	fmt.Println("  doctor                Check and fix development environment")
+	fmt.Println("  doctor                Check environment and validate services manifest policy")
 	fmt.Println("  hosts <subcommand>    Manage local hosts entries (see: mono hosts)")
 	fmt.Println("  infra <subcommand>    Manage local infrastructure (see: mono infra)")
 	fmt.Println("  metadata              Show generated metadata overview")
