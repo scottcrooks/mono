@@ -4,9 +4,11 @@ import (
 	"bytes"
 	"io"
 	"os"
+	"reflect"
 	"strings"
 	"testing"
 
+	"github.com/scottcrooks/mono/internal/cli/core"
 	"github.com/scottcrooks/mono/internal/version"
 )
 
@@ -62,6 +64,36 @@ func TestRunIntegrationFlagRejectedForNonTestTask(t *testing.T) {
 	})
 	if !strings.Contains(stderr, "--integration is only supported with \"test\"") {
 		t.Fatalf("unexpected stderr: %q", stderr)
+	}
+}
+
+func TestRegisterCommandsExpectedSet(t *testing.T) {
+	prevRegistry, prevRegistered := registry, commandsRegistered
+	registry = core.NewRegistry()
+	commandsRegistered = false
+	t.Cleanup(func() {
+		registry = prevRegistry
+		commandsRegistered = prevRegistered
+	})
+
+	registerCommands()
+
+	want := []string{
+		"affected",
+		"check",
+		"dev",
+		"doctor",
+		"hosts",
+		"infra",
+		"list",
+		"metadata",
+		"migrate",
+		"status",
+		"worktree",
+	}
+	got := registry.Names()
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("unexpected registered commands:\n got: %v\nwant: %v", got, want)
 	}
 }
 
