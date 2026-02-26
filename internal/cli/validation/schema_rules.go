@@ -282,6 +282,7 @@ func validateDeployNestedKeys(deployNode *yaml.Node, path string, report *Report
 func validateRequiredFields(services []manifestService, info map[int]serviceNodeInfo, report *Report) {
 	for i, svc := range services {
 		prefix := fmt.Sprintf("services[%d]", i)
+		label := serviceLabel(i, svc)
 		nodeInfo, ok := info[i]
 		if !ok {
 			nodeInfo = serviceNodeInfo{serviceAt: position{}}
@@ -300,7 +301,16 @@ func validateRequiredFields(services []manifestService, info map[int]serviceNode
 			addMissingFieldDiagnostic(report, prefix+".archetype", "archetype/runtime", requiredFieldPos(nodeInfo, "archetype"))
 		}
 		if !isFilled(svc.Owner) {
-			addMissingFieldDiagnostic(report, prefix+".owner", "owner", requiredFieldPos(nodeInfo, "owner"))
+			ownerPos := requiredFieldPos(nodeInfo, "owner")
+			report.add(Diagnostic{
+				Severity: SeverityError,
+				Code:     "schema.required",
+				Path:     prefix + ".owner",
+				Message:  "missing required field: owner",
+				Service:  label,
+				Line:     ownerPos.line,
+				Column:   ownerPos.column,
+			})
 		}
 	}
 }

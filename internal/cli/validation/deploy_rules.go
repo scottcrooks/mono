@@ -10,6 +10,7 @@ func validateDeployRules(services []manifestService, info map[int]serviceNodeInf
 		if svc.projectKind() != "service" {
 			continue
 		}
+		label := serviceLabel(i, svc)
 		prefix := fmt.Sprintf("services[%d].deploy", i)
 		sInfo, ok := info[i]
 		if !ok {
@@ -23,6 +24,7 @@ func validateDeployRules(services []manifestService, info map[int]serviceNodeInf
 				Code:     "deploy.required",
 				Path:     prefix,
 				Message:  "missing required deploy contract for service",
+				Service:  label,
 				Line:     deployPos.line,
 				Column:   deployPos.column,
 			})
@@ -35,6 +37,7 @@ func validateDeployRules(services []manifestService, info map[int]serviceNodeInf
 				Code:     "deploy.container_port",
 				Path:     prefix + ".containerPort",
 				Message:  "containerPort is required and must be > 0",
+				Service:  label,
 				Line:     deployPos.line,
 				Column:   deployPos.column,
 			})
@@ -46,6 +49,7 @@ func validateDeployRules(services []manifestService, info map[int]serviceNodeInf
 				Code:     "deploy.probes",
 				Path:     prefix + ".probes",
 				Message:  "probes.readiness and probes.liveness are required",
+				Service:  label,
 				Line:     deployPos.line,
 				Column:   deployPos.column,
 			})
@@ -56,6 +60,7 @@ func validateDeployRules(services []manifestService, info map[int]serviceNodeInf
 					Code:     "deploy.readiness",
 					Path:     prefix + ".probes.readiness",
 					Message:  "readiness probe requires path and port",
+					Service:  label,
 					Line:     deployPos.line,
 					Column:   deployPos.column,
 				})
@@ -66,6 +71,7 @@ func validateDeployRules(services []manifestService, info map[int]serviceNodeInf
 					Code:     "deploy.liveness",
 					Path:     prefix + ".probes.liveness",
 					Message:  "liveness probe requires path and port",
+					Service:  label,
 					Line:     deployPos.line,
 					Column:   deployPos.column,
 				})
@@ -78,6 +84,7 @@ func validateDeployRules(services []manifestService, info map[int]serviceNodeInf
 				Code:     "deploy.resources",
 				Path:     prefix + ".resources",
 				Message:  "resources.requests and resources.limits are required",
+				Service:  label,
 				Line:     deployPos.line,
 				Column:   deployPos.column,
 			})

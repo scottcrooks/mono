@@ -11,7 +11,9 @@ var projectMarkerFiles = []string{"go.mod", "package.json", "pyproject.toml", "C
 
 func validatePathRules(repoRoot string, services []manifestService, info map[int]serviceNodeInfo, report *Report) {
 	repoRootAbs, _ := filepath.Abs(repoRoot)
+	repoHasGoMod := hasRepoGoModule(repoRoot)
 	for i, svc := range services {
+		label := serviceLabel(i, svc)
 		path := strings.TrimSpace(svc.Path)
 		if path == "" {
 			continue
@@ -27,6 +29,7 @@ func validatePathRules(repoRoot string, services []manifestService, info map[int
 				Code:     "path.absolute",
 				Path:     fmt.Sprintf("services[%d].path", i),
 				Message:  "service path must be relative to repository root",
+				Service:  label,
 				Line:     p.line,
 				Column:   p.column,
 			})
@@ -39,6 +42,7 @@ func validatePathRules(repoRoot string, services []manifestService, info map[int
 				Code:     "path.escape",
 				Path:     fmt.Sprintf("services[%d].path", i),
 				Message:  "service path cannot escape repository root",
+				Service:  label,
 				Line:     p.line,
 				Column:   p.column,
 			})
@@ -53,6 +57,7 @@ func validatePathRules(repoRoot string, services []manifestService, info map[int
 				Code:     "path.escape",
 				Path:     fmt.Sprintf("services[%d].path", i),
 				Message:  "service path resolves outside repository root",
+				Service:  label,
 				Line:     p.line,
 				Column:   p.column,
 			})
@@ -65,6 +70,7 @@ func validatePathRules(repoRoot string, services []manifestService, info map[int
 				Code:     "path.missing",
 				Path:     fmt.Sprintf("services[%d].path", i),
 				Message:  fmt.Sprintf("service path does not exist: %s", path),
+				Service:  label,
 				Line:     p.line,
 				Column:   p.column,
 			})
@@ -77,18 +83,20 @@ func validatePathRules(repoRoot string, services []manifestService, info map[int
 				Code:     "path.not_directory",
 				Path:     fmt.Sprintf("services[%d].path", i),
 				Message:  fmt.Sprintf("service path is not a directory: %s", path),
+				Service:  label,
 				Line:     p.line,
 				Column:   p.column,
 			})
 			continue
 		}
 
-		if !hasProjectMarker(absPath) {
+		if !hasProjectMarker(absPath) && !(repoHasGoMod && isGoService(svc)) {
 			report.add(Diagnostic{
 				Severity: SeverityWarning,
 				Code:     "path.project_marker",
 				Path:     fmt.Sprintf("services[%d].path", i),
 				Message:  "service directory has no recognized project manifest (go.mod/package.json/pyproject.toml/Cargo.toml)",
+				Service:  label,
 				Line:     p.line,
 				Column:   p.column,
 			})
@@ -103,4 +111,13 @@ func hasProjectMarker(absPath string) bool {
 		}
 	}
 	return false
+}
+
+func hasRepoGoModule(repoRoot string) bool {
+	_, err := os.Stat(filepath.Join(repoRoot, "go.mod"))
+	return err == nil
+}
+
+func isGoService(svc manifestService) bool {
+	return strings.EqualFold(strings.TrimSpace(svc.Archetype), "go") || strings.EqualFold(strings.TrimSpace(svc.Runtime), "go")
 }

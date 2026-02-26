@@ -69,6 +69,9 @@ func TestValidateManifestForDoctorValidationFailure(t *testing.T) {
 	if !strings.Contains(output, "[ERROR]") {
 		t.Fatalf("expected severity output, got %q", output)
 	}
+	if !strings.Contains(output, "[service=svc (apps/missing)]") {
+		t.Fatalf("expected service context in output, got %q", output)
+	}
 }
 
 func TestValidateManifestForDoctorWarningOnly(t *testing.T) {

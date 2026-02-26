@@ -20,6 +20,7 @@ type Diagnostic struct {
 	Code     string
 	Path     string
 	Message  string
+	Service  string
 	Line     int
 	Column   int
 }
@@ -163,6 +164,21 @@ func (s manifestService) projectKind() string {
 		return strings.TrimSpace(s.Kind)
 	}
 	return strings.TrimSpace(s.Type)
+}
+
+func serviceLabel(index int, svc manifestService) string {
+	name := strings.TrimSpace(svc.Name)
+	path := strings.TrimSpace(svc.Path)
+	switch {
+	case name != "" && path != "":
+		return fmt.Sprintf("%s (%s)", name, path)
+	case name != "":
+		return name
+	case path != "":
+		return path
+	default:
+		return fmt.Sprintf("services[%d]", index)
+	}
 }
 
 // ValidateServicesManifest validates services.yaml policy and manifest contract for G1.

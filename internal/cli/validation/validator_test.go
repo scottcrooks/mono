@@ -280,6 +280,29 @@ func TestValidateServicesManifestWarnsOnMissingProjectMarker(t *testing.T) {
 	}
 }
 
+func TestValidateServicesManifestDoesNotWarnOnMissingProjectMarkerForGoWithRootModule(t *testing.T) {
+	repo := t.TempDir()
+	mustMkdirAll(t, filepath.Join(repo, "apps", "svc"))
+	mustWrite(t, filepath.Join(repo, "go.mod"), "module example.com/mono\n")
+	manifest := `services:
+  - name: svc
+    path: apps/svc
+    kind: package
+    archetype: go
+    owner: team
+`
+	manifestPath := filepath.Join(repo, "services.yaml")
+	mustWrite(t, manifestPath, manifest)
+
+	report, err := ValidateServicesManifest(manifestPath)
+	if err != nil {
+		t.Fatalf("ValidateServicesManifest returned error: %v", err)
+	}
+	if containsCode(report, "path.project_marker") {
+		t.Fatalf("expected no path.project_marker warning for go service with repo go.mod, got %+v", report.Diagnostics)
+	}
+}
+
 func TestValidateServicesManifestDiagnosticsDeterministic(t *testing.T) {
 	repo := t.TempDir()
 	mustMkdirAll(t, filepath.Join(repo, "apps", "a"))

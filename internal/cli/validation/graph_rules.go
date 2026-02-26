@@ -51,6 +51,7 @@ func validateGraphRules(services []manifestService, local *manifestLocal, info m
 				Code:     "graph.unknown_dependency",
 				Path:     fmt.Sprintf("services[%d].depends", i),
 				Message:  fmt.Sprintf("unknown dependency %q (must reference a service or local resource)", dep),
+				Service:  serviceLabel(i, svc),
 				Line:     p.line,
 				Column:   p.column,
 			})
@@ -68,6 +69,7 @@ func validateGraphRules(services []manifestService, local *manifestLocal, info m
 			Code:     "graph.cycle",
 			Path:     fmt.Sprintf("services[%d].depends", ownerIdx),
 			Message:  fmt.Sprintf("dependency cycle detected: %s", strings.Join(cycle, " -> ")),
+			Service:  serviceLabel(ownerIdx, services[ownerIdx]),
 			Line:     p.line,
 			Column:   p.column,
 		})

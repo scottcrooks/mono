@@ -345,11 +345,15 @@ func validateManifestForDoctor(path string, out io.Writer) error {
 		if level == "" {
 			level = "ERROR"
 		}
+		serviceSuffix := ""
+		if strings.TrimSpace(diag.Service) != "" {
+			serviceSuffix = fmt.Sprintf(" [service=%s]", diag.Service)
+		}
 		if diag.Line > 0 {
-			fmt.Fprintf(out, "    - [%s] [%s] %s:%d:%d %s\n", level, diag.Code, diag.Path, diag.Line, diag.Column, diag.Message)
+			fmt.Fprintf(out, "    - [%s] [%s] %s:%d:%d %s%s\n", level, diag.Code, diag.Path, diag.Line, diag.Column, diag.Message, serviceSuffix)
 			continue
 		}
-		fmt.Fprintf(out, "    - [%s] [%s] %s %s\n", level, diag.Code, diag.Path, diag.Message)
+		fmt.Fprintf(out, "    - [%s] [%s] %s %s%s\n", level, diag.Code, diag.Path, diag.Message, serviceSuffix)
 	}
 	if !report.HasErrors() {
 		fmt.Fprintln(out, "  ✓ Manifest policy checks passed with warnings")
