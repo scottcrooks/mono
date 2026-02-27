@@ -123,6 +123,7 @@ Use this as a validation grid against your PoC.
 - [ ] (optional) dependency bring-up deferred from MVP
 
 ## D4. Worktree Management
+- Reference workflow: `docs/worktree_tracking.md` (recommended `AGENTS.md` automation snippet).
 - [ ] `mono worktree create <branch> [--from <ref>] [--id <unique-id>] [--no-bootstrap]`
   - [ ] creates isolated git worktree for unrelated parallel work
   - [ ] supports optional bootstrap/setup after create

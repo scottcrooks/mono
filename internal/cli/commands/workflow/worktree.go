@@ -25,6 +25,15 @@ const (
 	workflowStatusUnset      worktreeWorkflowStatus = "unset"
 )
 
+type worktreeListState string
+
+const (
+	worktreeListStateAll        worktreeListState = ""
+	worktreeListStateActive     worktreeListState = "active"
+	worktreeListStateNeedsInput worktreeListState = "needs-input"
+	worktreeListStateDone       worktreeListState = "done"
+)
+
 type worktreeStatusStore struct {
 	Worktrees map[string]worktreeWorkflowStatus `yaml:"worktrees"`
 }
@@ -43,7 +52,7 @@ func (c *worktreeCommand) Run(args []string) error {
 	case "create":
 		return runWorktreeCreate(args[3:])
 	case "list":
-		return runWorktreeList()
+		return runWorktreeList(args[3:])
 	case "path":
 		return runWorktreePath(args[3:])
 	case "tag":
@@ -124,7 +133,12 @@ func runWorktreeCreate(args []string) error {
 	return nil
 }
 
-func runWorktreeList() error {
+func runWorktreeList(args []string) error {
+	listState, err := parseListArgs(args)
+	if err != nil {
+		return err
+	}
+
 	entries, err := gitWorktreeEntries()
 	if err != nil {
 		return err
@@ -144,6 +158,7 @@ func runWorktreeList() error {
 		return statusLoadErr
 	}
 
+	printed := 0
 	for _, entry := range entries {
 		branch := entry.Branch
 		if branch == "" && entry.Detached {
@@ -181,9 +196,19 @@ func runWorktreeList() error {
 		if tagged, ok := statusStore.Worktrees[normalizeWorktreePath(entry.Path)]; ok {
 			workflowStatus = tagged
 		}
+
+		if !includeWorktreeInList(listState, workflowStatus, dirtyState, mergedState) {
+			continue
+		}
+
 		fmt.Printf("  workflow-status: %s\n", workflowStatus)
 		fmt.Printf("  merged(%s): %s\n", mergeBaseLabel, mergedState)
 		fmt.Println()
+		printed++
+	}
+
+	if printed == 0 && listState != worktreeListStateAll {
+		fmt.Printf("No worktrees matched --state %q\n", listState)
 	}
 
 	return nil
@@ -371,6 +396,63 @@ func parseTagArgs(args []string) (worktreeWorkflowStatus, error) {
 		return "", fmt.Errorf("usage: mono worktree tag <IN_PROGRESS|DONE|NEEDS_INPUT>")
 	}
 	return parseWorkflowStatus(args[0])
+}
+
+func parseListArgs(args []string) (worktreeListState, error) {
+	state := worktreeListStateAll
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		switch {
+		case arg == "--state":
+			if i+1 >= len(args) {
+				return "", fmt.Errorf("--state requires a value")
+			}
+			parsed, err := parseListState(args[i+1])
+			if err != nil {
+				return "", err
+			}
+			state = parsed
+			i++
+		case strings.HasPrefix(arg, "--state="):
+			value := strings.TrimPrefix(arg, "--state=")
+			if value == "" {
+				return "", fmt.Errorf("--state requires a value")
+			}
+			parsed, err := parseListState(value)
+			if err != nil {
+				return "", err
+			}
+			state = parsed
+		default:
+			return "", fmt.Errorf("unknown argument %q (usage: mono worktree list [--state <active|needs-input|done>])", arg)
+		}
+	}
+	return state, nil
+}
+
+func parseListState(input string) (worktreeListState, error) {
+	state := worktreeListState(strings.ToLower(strings.TrimSpace(input)))
+	switch state {
+	case worktreeListStateActive, worktreeListStateNeedsInput, worktreeListStateDone:
+		return state, nil
+	default:
+		return "", fmt.Errorf("invalid list state %q (expected one of: active, needs-input, done)", input)
+	}
+}
+
+func includeWorktreeInList(state worktreeListState, workflowStatus worktreeWorkflowStatus, dirtyState, mergedState string) bool {
+	switch state {
+	case worktreeListStateAll:
+		return true
+	case worktreeListStateActive:
+		return workflowStatus == workflowStatusInProgress && mergedState == "no"
+	case worktreeListStateNeedsInput:
+		return workflowStatus == workflowStatusNeedsInput || mergedState == "unknown"
+	case worktreeListStateDone:
+		return workflowStatus == workflowStatusDone && mergedState == "yes" && dirtyState == "clean"
+	default:
+		return true
+	}
 }
 
 func parseWorkflowStatus(input string) (worktreeWorkflowStatus, error) {
@@ -904,7 +986,7 @@ func printWorktreeUsage() {
 	fmt.Println()
 	fmt.Println("Usage:")
 	fmt.Println("  mono worktree create <branch> [--from <ref>] [--id <unique-id>] [--no-bootstrap]")
-	fmt.Println("  mono worktree list")
+	fmt.Println("  mono worktree list [--state <active|needs-input|done>]")
 	fmt.Println("  mono worktree path <branch-or-id>")
 	fmt.Println("  mono worktree tag <IN_PROGRESS|DONE|NEEDS_INPUT>")
 	fmt.Println("  mono worktree remove <branch-or-id> [--force]")

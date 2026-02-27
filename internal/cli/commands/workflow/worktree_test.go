@@ -96,6 +96,71 @@ func TestParseRemoveArgs(t *testing.T) {
 	}
 }
 
+func TestParseListArgs(t *testing.T) {
+	t.Parallel()
+
+	state, err := parseListArgs([]string{"--state", "active"})
+	if err != nil {
+		t.Fatalf("parseListArgs returned error: %v", err)
+	}
+	if state != worktreeListStateActive {
+		t.Fatalf("unexpected state: %q", state)
+	}
+
+	state, err = parseListArgs([]string{"--state=needs-input"})
+	if err != nil {
+		t.Fatalf("parseListArgs returned error: %v", err)
+	}
+	if state != worktreeListStateNeedsInput {
+		t.Fatalf("unexpected state: %q", state)
+	}
+
+	state, err = parseListArgs(nil)
+	if err != nil {
+		t.Fatalf("parseListArgs nil returned error: %v", err)
+	}
+	if state != worktreeListStateAll {
+		t.Fatalf("unexpected default state: %q", state)
+	}
+}
+
+func TestParseListArgsInvalid(t *testing.T) {
+	t.Parallel()
+
+	if _, err := parseListArgs([]string{"--state", "blocked"}); err == nil {
+		t.Fatal("expected invalid state error")
+	}
+	if _, err := parseListArgs([]string{"--state"}); err == nil {
+		t.Fatal("expected missing value error")
+	}
+	if _, err := parseListArgs([]string{"--bad-flag"}); err == nil {
+		t.Fatal("expected unknown argument error")
+	}
+}
+
+func TestIncludeWorktreeInList(t *testing.T) {
+	t.Parallel()
+
+	if !includeWorktreeInList(worktreeListStateActive, workflowStatusInProgress, "dirty", "no") {
+		t.Fatal("expected active state to include IN_PROGRESS + unmerged worktree")
+	}
+	if includeWorktreeInList(worktreeListStateActive, workflowStatusInProgress, "clean", "yes") {
+		t.Fatal("did not expect active state to include merged worktree")
+	}
+	if !includeWorktreeInList(worktreeListStateNeedsInput, workflowStatusNeedsInput, "clean", "yes") {
+		t.Fatal("expected needs-input state to include NEEDS_INPUT workflow")
+	}
+	if !includeWorktreeInList(worktreeListStateNeedsInput, workflowStatusUnset, "clean", "unknown") {
+		t.Fatal("expected needs-input state to include unknown merge status")
+	}
+	if !includeWorktreeInList(worktreeListStateDone, workflowStatusDone, "clean", "yes") {
+		t.Fatal("expected done state to include DONE + merged + clean worktree")
+	}
+	if includeWorktreeInList(worktreeListStateDone, workflowStatusDone, "dirty", "yes") {
+		t.Fatal("did not expect done state to include dirty worktree")
+	}
+}
+
 func TestParseTagArgs(t *testing.T) {
 	t.Parallel()
 
@@ -252,6 +317,9 @@ func TestPrintWorktreeUsageIncludesTag(t *testing.T) {
 	}
 	if !strings.Contains(string(out), "mono worktree tag <IN_PROGRESS|DONE|NEEDS_INPUT>") {
 		t.Fatalf("usage output missing tag command: %q", string(out))
+	}
+	if !strings.Contains(string(out), "mono worktree list [--state <active|needs-input|done>]") {
+		t.Fatalf("usage output missing list state options: %q", string(out))
 	}
 }
 
