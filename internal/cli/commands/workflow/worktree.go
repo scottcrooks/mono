@@ -16,6 +16,19 @@ import (
 
 type worktreeCommand struct{}
 
+type worktreeWorkflowStatus string
+
+const (
+	workflowStatusInProgress worktreeWorkflowStatus = "IN_PROGRESS"
+	workflowStatusDone       worktreeWorkflowStatus = "DONE"
+	workflowStatusNeedsInput worktreeWorkflowStatus = "NEEDS_INPUT"
+	workflowStatusUnset      worktreeWorkflowStatus = "unset"
+)
+
+type worktreeStatusStore struct {
+	Worktrees map[string]worktreeWorkflowStatus `yaml:"worktrees"`
+}
+
 func init() {
 	registerCommand("worktree", &worktreeCommand{})
 }
@@ -33,6 +46,8 @@ func (c *worktreeCommand) Run(args []string) error {
 		return runWorktreeList()
 	case "path":
 		return runWorktreePath(args[3:])
+	case "tag":
+		return runWorktreeTag(args[3:])
 	case "remove":
 		return runWorktreeRemove(args[3:])
 	case "prune":
@@ -124,6 +139,10 @@ func runWorktreeList() error {
 	if mergeBaseLabel == "" {
 		mergeBaseLabel = "default"
 	}
+	statusStore, statusLoadErr := loadWorktreeStatusStore()
+	if statusLoadErr != nil {
+		return statusLoadErr
+	}
 
 	for _, entry := range entries {
 		branch := entry.Branch
@@ -158,10 +177,43 @@ func runWorktreeList() error {
 		fmt.Printf("  branch: %s\n", branch)
 		fmt.Printf("  head:   %s\n", shortSHA(entry.Head))
 		fmt.Printf("  status: %s\n", dirtyState)
+		workflowStatus := workflowStatusUnset
+		if tagged, ok := statusStore.Worktrees[normalizeWorktreePath(entry.Path)]; ok {
+			workflowStatus = tagged
+		}
+		fmt.Printf("  workflow-status: %s\n", workflowStatus)
 		fmt.Printf("  merged(%s): %s\n", mergeBaseLabel, mergedState)
 		fmt.Println()
 	}
 
+	return nil
+}
+
+func runWorktreeTag(args []string) error {
+	status, err := parseTagArgs(args)
+	if err != nil {
+		return err
+	}
+
+	currentPath, err := currentWorktreePath()
+	if err != nil {
+		return err
+	}
+
+	store, storePath, err := loadWorktreeStatusStoreWithPath()
+	if err != nil {
+		return err
+	}
+	if store.Worktrees == nil {
+		store.Worktrees = make(map[string]worktreeWorkflowStatus)
+	}
+	store.Worktrees[normalizeWorktreePath(currentPath)] = status
+
+	if err := saveWorktreeStatusStoreToPath(storePath, store); err != nil {
+		return err
+	}
+
+	fmt.Printf("[ok] Tagged current worktree %s as %s\n", currentPath, status)
 	return nil
 }
 
@@ -212,6 +264,9 @@ func runWorktreeRemove(args []string) error {
 	if runErr := cmd.Run(); runErr != nil {
 		return fmt.Errorf("git worktree remove failed: %w", runErr)
 	}
+	if err := deleteWorktreeStatus(entry.Path); err != nil {
+		return err
+	}
 
 	fmt.Printf("[ok] Removed worktree %s\n", entry.Path)
 	return nil
@@ -223,6 +278,9 @@ func runWorktreePrune() error {
 	cmd.Stderr = os.Stderr
 	if runErr := cmd.Run(); runErr != nil {
 		return fmt.Errorf("git worktree prune failed: %w", runErr)
+	}
+	if err := pruneStaleWorktreeStatuses(); err != nil {
+		return err
 	}
 	fmt.Println("[ok] Pruned stale worktree metadata")
 	return nil
@@ -306,6 +364,23 @@ func parseRemoveArgs(args []string) (identifier string, force bool, err error) {
 		return "", false, fmt.Errorf("usage: mono worktree remove <branch-or-id> [--force]")
 	}
 	return identifier, force, nil
+}
+
+func parseTagArgs(args []string) (worktreeWorkflowStatus, error) {
+	if len(args) != 1 {
+		return "", fmt.Errorf("usage: mono worktree tag <IN_PROGRESS|DONE|NEEDS_INPUT>")
+	}
+	return parseWorkflowStatus(args[0])
+}
+
+func parseWorkflowStatus(input string) (worktreeWorkflowStatus, error) {
+	status := worktreeWorkflowStatus(strings.ToUpper(strings.TrimSpace(input)))
+	switch status {
+	case workflowStatusInProgress, workflowStatusDone, workflowStatusNeedsInput:
+		return status, nil
+	default:
+		return "", fmt.Errorf("invalid workflow status %q (expected one of: IN_PROGRESS, DONE, NEEDS_INPUT)", input)
+	}
 }
 
 func gitRepoRoot() (string, error) {
@@ -481,6 +556,162 @@ func defaultMergeBaseBranch() (string, error) {
 	}
 
 	return "", errors.New("could not determine default base branch (tried origin/HEAD, main, master)")
+}
+
+func loadWorktreeStatusStore() (*worktreeStatusStore, error) {
+	store, _, err := loadWorktreeStatusStoreWithPath()
+	if err != nil {
+		return nil, err
+	}
+	return store, nil
+}
+
+func loadWorktreeStatusStoreWithPath() (*worktreeStatusStore, string, error) {
+	storePath, err := worktreeStatusStorePath()
+	if err != nil {
+		return nil, "", err
+	}
+
+	store, err := loadWorktreeStatusStoreFromPath(storePath)
+	if err != nil {
+		return nil, "", err
+	}
+	return store, storePath, nil
+}
+
+func loadWorktreeStatusStoreFromPath(storePath string) (*worktreeStatusStore, error) {
+	data, err := os.ReadFile(storePath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return &worktreeStatusStore{Worktrees: make(map[string]worktreeWorkflowStatus)}, nil
+		}
+		return nil, fmt.Errorf("failed to read worktree status store %s: %w", storePath, err)
+	}
+
+	store := &worktreeStatusStore{}
+	if len(strings.TrimSpace(string(data))) == 0 {
+		store.Worktrees = make(map[string]worktreeWorkflowStatus)
+		return store, nil
+	}
+	if err := yaml.Unmarshal(data, store); err != nil {
+		return nil, fmt.Errorf("failed to parse worktree status store %s: %w", storePath, err)
+	}
+	if store.Worktrees == nil {
+		store.Worktrees = make(map[string]worktreeWorkflowStatus)
+	}
+	return store, nil
+}
+
+func saveWorktreeStatusStoreToPath(storePath string, store *worktreeStatusStore) error {
+	if store.Worktrees == nil {
+		store.Worktrees = make(map[string]worktreeWorkflowStatus)
+	}
+
+	data, err := yaml.Marshal(store)
+	if err != nil {
+		return fmt.Errorf("failed to marshal worktree status store: %w", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(storePath), 0o755); err != nil {
+		return fmt.Errorf("failed to create worktree status store directory: %w", err)
+	}
+	if err := os.WriteFile(storePath, data, 0o600); err != nil {
+		return fmt.Errorf("failed to write worktree status store %s: %w", storePath, err)
+	}
+	return nil
+}
+
+func deleteWorktreeStatus(worktreePath string) error {
+	store, storePath, err := loadWorktreeStatusStoreWithPath()
+	if err != nil {
+		return err
+	}
+	key := normalizeWorktreePath(worktreePath)
+	if _, ok := store.Worktrees[key]; !ok {
+		return nil
+	}
+	delete(store.Worktrees, key)
+	return saveWorktreeStatusStoreToPath(storePath, store)
+}
+
+func pruneStaleWorktreeStatuses() error {
+	entries, err := gitWorktreeEntries()
+	if err != nil {
+		return err
+	}
+
+	store, storePath, err := loadWorktreeStatusStoreWithPath()
+	if err != nil {
+		return err
+	}
+	if len(store.Worktrees) == 0 {
+		return nil
+	}
+
+	live := make(map[string]struct{}, len(entries))
+	for _, entry := range entries {
+		live[normalizeWorktreePath(entry.Path)] = struct{}{}
+	}
+
+	changed := false
+	for path := range store.Worktrees {
+		if _, ok := live[path]; !ok {
+			delete(store.Worktrees, path)
+			changed = true
+		}
+	}
+	if !changed {
+		return nil
+	}
+
+	return saveWorktreeStatusStoreToPath(storePath, store)
+}
+
+func currentWorktreePath() (string, error) {
+	path, err := gitRepoRoot()
+	if err != nil {
+		return "", err
+	}
+	return normalizeWorktreePath(path), nil
+}
+
+func worktreeStatusStorePath() (string, error) {
+	repoRoot, err := gitRepoRoot()
+	if err != nil {
+		return "", err
+	}
+
+	cmd := exec.Command("git", "rev-parse", "--path-format=absolute", "--git-common-dir")
+	cmd.Dir = repoRoot
+	if out, err := cmd.Output(); err == nil {
+		commonDir := strings.TrimSpace(string(out))
+		if commonDir != "" {
+			return filepath.Join(commonDir, "mono-worktree-statuses.yaml"), nil
+		}
+	}
+
+	fallbackCmd := exec.Command("git", "rev-parse", "--git-common-dir")
+	fallbackCmd.Dir = repoRoot
+	out, err := fallbackCmd.Output()
+	if err != nil {
+		return "", fmt.Errorf("failed to locate git common dir: %w", err)
+	}
+	commonDir := strings.TrimSpace(string(out))
+	if commonDir == "" {
+		return "", errors.New("failed to locate git common dir: empty path")
+	}
+	if !filepath.IsAbs(commonDir) {
+		commonDir = filepath.Clean(filepath.Join(repoRoot, commonDir))
+	}
+	return filepath.Join(commonDir, "mono-worktree-statuses.yaml"), nil
+}
+
+func normalizeWorktreePath(path string) string {
+	cleaned := filepath.Clean(path)
+	absolute, err := filepath.Abs(cleaned)
+	if err != nil {
+		return cleaned
+	}
+	return absolute
 }
 
 func isBranchMergedIntoBase(branch, base string) (bool, error) {
@@ -675,6 +906,7 @@ func printWorktreeUsage() {
 	fmt.Println("  mono worktree create <branch> [--from <ref>] [--id <unique-id>] [--no-bootstrap]")
 	fmt.Println("  mono worktree list")
 	fmt.Println("  mono worktree path <branch-or-id>")
+	fmt.Println("  mono worktree tag <IN_PROGRESS|DONE|NEEDS_INPUT>")
 	fmt.Println("  mono worktree remove <branch-or-id> [--force]")
 	fmt.Println("  mono worktree prune")
 	fmt.Println()

@@ -1,9 +1,11 @@
 package workflow
 
 import (
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -94,6 +96,36 @@ func TestParseRemoveArgs(t *testing.T) {
 	}
 }
 
+func TestParseTagArgs(t *testing.T) {
+	t.Parallel()
+
+	status, err := parseTagArgs([]string{"in_progress"})
+	if err != nil {
+		t.Fatalf("parseTagArgs returned error: %v", err)
+	}
+	if status != workflowStatusInProgress {
+		t.Fatalf("unexpected status: %q", status)
+	}
+}
+
+func TestParseTagArgsInvalid(t *testing.T) {
+	t.Parallel()
+
+	_, err := parseTagArgs([]string{"blocked"})
+	if err == nil {
+		t.Fatal("expected invalid status error")
+	}
+}
+
+func TestParseTagArgsMissing(t *testing.T) {
+	t.Parallel()
+
+	_, err := parseTagArgs(nil)
+	if err == nil {
+		t.Fatal("expected usage error for missing status")
+	}
+}
+
 func TestSanitizeSlug(t *testing.T) {
 	t.Parallel()
 
@@ -149,6 +181,77 @@ func TestParseWorktreePorcelainMissingPath(t *testing.T) {
 	_, err := parseWorktreePorcelain("HEAD deadbeef\n")
 	if err == nil {
 		t.Fatal("expected parse error for missing worktree path")
+	}
+}
+
+func TestLoadAndSaveWorktreeStatusStoreFromPath(t *testing.T) {
+	t.Parallel()
+
+	storePath := filepath.Join(t.TempDir(), "mono-worktree-statuses.yaml")
+
+	store, err := loadWorktreeStatusStoreFromPath(storePath)
+	if err != nil {
+		t.Fatalf("loadWorktreeStatusStoreFromPath missing file: %v", err)
+	}
+	if len(store.Worktrees) != 0 {
+		t.Fatalf("expected empty store for missing file, got %d entries", len(store.Worktrees))
+	}
+
+	store.Worktrees["/tmp/worktree-a"] = workflowStatusNeedsInput
+	if err := saveWorktreeStatusStoreToPath(storePath, store); err != nil {
+		t.Fatalf("saveWorktreeStatusStoreToPath: %v", err)
+	}
+
+	reloaded, err := loadWorktreeStatusStoreFromPath(storePath)
+	if err != nil {
+		t.Fatalf("reload store: %v", err)
+	}
+	if got := reloaded.Worktrees["/tmp/worktree-a"]; got != workflowStatusNeedsInput {
+		t.Fatalf("unexpected reloaded status: %q", got)
+	}
+}
+
+func TestLoadWorktreeStatusStoreFromPathEmptyFile(t *testing.T) {
+	t.Parallel()
+
+	storePath := filepath.Join(t.TempDir(), "mono-worktree-statuses.yaml")
+	if err := os.WriteFile(storePath, []byte(" \n"), 0o600); err != nil {
+		t.Fatalf("write empty store file: %v", err)
+	}
+
+	store, err := loadWorktreeStatusStoreFromPath(storePath)
+	if err != nil {
+		t.Fatalf("loadWorktreeStatusStoreFromPath empty file: %v", err)
+	}
+	if len(store.Worktrees) != 0 {
+		t.Fatalf("expected empty map for empty file, got %d", len(store.Worktrees))
+	}
+}
+
+func TestPrintWorktreeUsageIncludesTag(t *testing.T) {
+	t.Parallel()
+
+	oldStdout := os.Stdout
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("os.Pipe: %v", err)
+	}
+	os.Stdout = w
+	t.Cleanup(func() { os.Stdout = oldStdout })
+
+	printWorktreeUsage()
+	if err := w.Close(); err != nil {
+		t.Fatalf("close writer: %v", err)
+	}
+	out, err := io.ReadAll(r)
+	if err != nil {
+		t.Fatalf("read usage output: %v", err)
+	}
+	if err := r.Close(); err != nil {
+		t.Fatalf("close reader: %v", err)
+	}
+	if !strings.Contains(string(out), "mono worktree tag <IN_PROGRESS|DONE|NEEDS_INPUT>") {
+		t.Fatalf("usage output missing tag command: %q", string(out))
 	}
 }
 
