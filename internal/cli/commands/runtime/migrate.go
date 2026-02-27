@@ -16,6 +16,7 @@ import (
 	_ "github.com/golang-migrate/migrate/v4/database/postgres" // postgres driver for migrations
 	_ "github.com/golang-migrate/migrate/v4/source/file"       // file source for migrations
 	_ "github.com/jackc/pgx/v5/stdlib"                         // pgx driver for database/sql
+	"github.com/scottcrooks/mono/internal/cli/output"
 )
 
 type migrateCommand struct{}
@@ -139,6 +140,8 @@ func loadDSN(servicePath string) (string, error) {
 // target database if it does not exist. This enables a smooth first-run local
 // dev experience without requiring manual database creation.
 func ensureDatabase(dsn string) error {
+	p := output.DefaultPrinter()
+
 	u, err := url.Parse(dsn)
 	if err != nil {
 		return fmt.Errorf("invalid DSN: %w", err)
@@ -171,12 +174,12 @@ func ensureDatabase(dsn string) error {
 	}
 
 	if !exists {
-		fmt.Printf("==> [migrate] Creating database %q...\n", dbName)
+		p.StepStart("migrate", fmt.Sprintf("Creating database %q...", dbName))
 		//nolint:gosec // dbName is validated by isValidIdentifier above
 		if _, execErr := db.Exec(fmt.Sprintf(`CREATE DATABASE "%s"`, dbName)); execErr != nil {
 			return fmt.Errorf("failed to create database %q: %w", dbName, execErr)
 		}
-		fmt.Printf("✓ Database %q created\n", dbName)
+		p.StepOK("migrate", fmt.Sprintf("Database %q created", dbName))
 	}
 
 	return nil
@@ -193,37 +196,41 @@ func isValidIdentifier(s string) bool {
 }
 
 func migrateUp(migrationsPath, dsn string) error {
+	p := output.DefaultPrinter()
+
 	m, err := newMigrate(migrationsPath, dsn)
 	if err != nil {
 		return err
 	}
 	defer closeMigrate(m)
 
-	fmt.Println("==> [migrate] Applying pending migrations...")
+	p.StepStart("migrate", "Applying pending migrations...")
 	if upErr := m.Up(); upErr != nil {
 		if errors.Is(upErr, migrate.ErrNoChange) {
-			fmt.Println("✓ No new migrations to apply")
+			p.StepOK("migrate", "No new migrations to apply")
 			return nil
 		}
 		return fmt.Errorf("migration up failed: %w", upErr)
 	}
 
 	version, dirty, _ := m.Version()
-	fmt.Printf("✓ Migrations applied (version %d, dirty: %v)\n", version, dirty)
+	p.StepOK("migrate", fmt.Sprintf("Migrations applied (version %d, dirty: %v)", version, dirty))
 	return nil
 }
 
 func migrateDown(migrationsPath, dsn string, steps int) error {
+	p := output.DefaultPrinter()
+
 	m, err := newMigrate(migrationsPath, dsn)
 	if err != nil {
 		return err
 	}
 	defer closeMigrate(m)
 
-	fmt.Printf("==> [migrate] Rolling back %d migration(s)...\n", steps)
+	p.StepStart("migrate", fmt.Sprintf("Rolling back %d migration(s)...", steps))
 	if downErr := m.Steps(-steps); downErr != nil {
 		if errors.Is(downErr, migrate.ErrNoChange) {
-			fmt.Println("✓ Nothing to roll back")
+			p.StepOK("migrate", "Nothing to roll back")
 			return nil
 		}
 		return fmt.Errorf("migration down failed: %w", downErr)
@@ -231,14 +238,16 @@ func migrateDown(migrationsPath, dsn string, steps int) error {
 
 	version, dirty, vErr := m.Version()
 	if errors.Is(vErr, migrate.ErrNilVersion) {
-		fmt.Println("✓ Rolled back (no migrations applied)")
+		p.StepOK("migrate", "Rolled back (no migrations applied)")
 	} else {
-		fmt.Printf("✓ Rolled back (version %d, dirty: %v)\n", version, dirty)
+		p.StepOK("migrate", fmt.Sprintf("Rolled back (version %d, dirty: %v)", version, dirty))
 	}
 	return nil
 }
 
 func migrateStatus(migrationsPath, dsn string) error {
+	p := output.DefaultPrinter()
+
 	m, err := newMigrate(migrationsPath, dsn)
 	if err != nil {
 		return err
@@ -247,21 +256,23 @@ func migrateStatus(migrationsPath, dsn string) error {
 
 	version, dirty, vErr := m.Version()
 	if errors.Is(vErr, migrate.ErrNilVersion) {
-		fmt.Println("Status: no migrations applied")
+		p.Summary("Status: no migrations applied")
 		return nil
 	}
 	if vErr != nil {
 		return fmt.Errorf("failed to get migration version: %w", vErr)
 	}
 
-	fmt.Printf("Current version : %d\n", version)
-	fmt.Printf("Dirty           : %v\n", dirty)
+	p.Summary(fmt.Sprintf("Current version : %d", version))
+	p.Summary(fmt.Sprintf("Dirty           : %v", dirty))
 	return nil
 }
 
 // migrateCreate generates a new NNN_name.{up,down}.sql file pair in migrationsPath.
 // The sequence number is one higher than the current maximum.
 func migrateCreate(migrationsPath, name string) error {
+	p := output.DefaultPrinter()
+
 	// Normalise name
 	name = strings.ReplaceAll(name, " ", "_")
 	name = strings.ReplaceAll(name, "-", "_")
@@ -309,9 +320,9 @@ func migrateCreate(migrationsPath, name string) error {
 		return fmt.Errorf("failed to create down migration file: %w", writeErr)
 	}
 
-	fmt.Println("✓ Created migration files:")
-	fmt.Printf("  %s\n", upFile)
-	fmt.Printf("  %s\n", downFile)
+	p.StepOK("migrate", "Created migration files:")
+	p.Summary("  " + upFile)
+	p.Summary("  " + downFile)
 	return nil
 }
 
@@ -336,24 +347,25 @@ func closeMigrate(m *migrate.Migrate) {
 }
 
 func printMigrateUsage() {
-	fmt.Println("mono migrate - Database migration management")
-	fmt.Println()
-	fmt.Println("Usage:")
-	fmt.Println("  mono migrate <service> <subcommand> [args]")
-	fmt.Println()
-	fmt.Println("Subcommands:")
-	fmt.Println("  up              Apply all pending migrations")
-	fmt.Println("  down [N]        Roll back N migrations (default: 1)")
-	fmt.Println("  status          Show current migration version and dirty state")
-	fmt.Println("  create <name>   Create a new migration file pair")
-	fmt.Println()
-	fmt.Println("DSN Resolution (priority order):")
-	fmt.Println("  1. MONO_DATABASE_DSN environment variable")
-	fmt.Println("  2. MONO_DATABASE_DSN=... in <service_path>/.env")
-	fmt.Println()
-	fmt.Println("Examples:")
-	fmt.Println("  mono migrate pythia up")
-	fmt.Println("  mono migrate pythia down 2")
-	fmt.Println("  mono migrate pythia status")
-	fmt.Println("  mono migrate pythia create add_user_table")
+	p := output.DefaultPrinter()
+	p.Summary("mono migrate - Database migration management")
+	p.Blank()
+	p.Summary("Usage:")
+	p.Summary("  mono migrate <service> <subcommand> [args]")
+	p.Blank()
+	p.Summary("Subcommands:")
+	p.Summary("  up              Apply all pending migrations")
+	p.Summary("  down [N]        Roll back N migrations (default: 1)")
+	p.Summary("  status          Show current migration version and dirty state")
+	p.Summary("  create <name>   Create a new migration file pair")
+	p.Blank()
+	p.Summary("DSN Resolution (priority order):")
+	p.Summary("  1. MONO_DATABASE_DSN environment variable")
+	p.Summary("  2. MONO_DATABASE_DSN=... in <service_path>/.env")
+	p.Blank()
+	p.Summary("Examples:")
+	p.Summary("  mono migrate pythia up")
+	p.Summary("  mono migrate pythia down 2")
+	p.Summary("  mono migrate pythia status")
+	p.Summary("  mono migrate pythia create add_user_table")
 }

@@ -11,6 +11,20 @@
 - `tasks/`: orchestrated task engine (`build|lint|typecheck|test|audit|package|deploy`).
 - `impact/`: change detection and check planning.
 
+## Output Conventions
+
+- Use `internal/cli/output` for human-facing command output.
+- Use semantic printer methods for status lines:
+  - `StepStart` for action start
+  - `StepOK` for success
+  - `StepWarn` for warnings/skips
+  - `StepErr` for failures
+  - `Summary` for neutral informational lines
+- Use `output.NewPrefixWriter(...)` for subprocess stdout/stderr prefixing instead of local duplicate implementations.
+- Output mode policy:
+  - interactive terminals use semantic color and symbols
+  - non-interactive/CI/`NO_COLOR=1` runs emit plain deterministic text
+
 ## Adding a new command
 
 1. Add command implementation in the appropriate `commands/<purpose>/` package.

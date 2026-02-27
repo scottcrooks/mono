@@ -10,6 +10,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/scottcrooks/mono/internal/cli/output"
 )
 
 // InfraState tracks running infrastructure state
@@ -77,6 +79,8 @@ func validateKubeName(s string) error {
 
 // checkKubectl verifies kubectl is available and shows current context
 func checkKubectl() error {
+	p := output.DefaultPrinter()
+
 	// Check if kubectl is installed
 	if err := exec.Command("kubectl", "version", "--client").Run(); err != nil {
 		return fmt.Errorf("kubectl is not installed or not in PATH")
@@ -90,7 +94,7 @@ func checkKubectl() error {
 	}
 
 	context := strings.TrimSpace(string(output))
-	fmt.Printf("==> [infra] Using kubectl context: %s\n", context)
+	p.StepStart("infra", "Using kubectl context: "+context)
 
 	// Fail fast if the current context's API server is unreachable.
 	readyCmd := exec.Command("kubectl", "--request-timeout="+kubeAPICheckTimeout, "get", "--raw=/readyz")
@@ -103,14 +107,16 @@ func checkKubectl() error {
 		return fmt.Errorf("kubernetes API is unreachable for context %q (start Rancher Desktop or switch context): %w: %s", context, err, detail)
 	}
 
-	fmt.Printf("==> [infra] Kubernetes API reachable (timeout %s)\n", kubeAPICheckTimeout)
-	fmt.Println()
+	p.StepOK("infra", fmt.Sprintf("Kubernetes API reachable (timeout %s)", kubeAPICheckTimeout))
+	p.Blank()
 
 	return nil
 }
 
 // infraUp deploys infrastructure resources
 func infraUp(args []string) error {
+	p := output.DefaultPrinter()
+
 	local, err := loadLocalConfig()
 	if err != nil {
 		return err
@@ -146,7 +152,7 @@ func infraUp(args []string) error {
 	}
 
 	// Create namespace (idempotent)
-	fmt.Printf("==> [infra] Creating namespace: %s\n", local.Namespace)
+	p.StepStart("infra", "Creating namespace: "+local.Namespace)
 	createNsCmd := exec.Command("kubectl", "create", "namespace", local.Namespace, "--dry-run=client", "-o", "yaml") //nolint:gosec // G204: namespace validated by validateKubeName above; no shell involved
 	applyNsCmd := exec.Command("kubectl", "apply", "-f", "-")
 	pipe, err := createNsCmd.StdoutPipe()
@@ -171,10 +177,10 @@ func infraUp(args []string) error {
 	// This makes infra-up corrective - you don't need to run infra-down first
 	for _, res := range resourcesToDeploy {
 		if pid, exists := state.PortForwards[res.Name]; exists {
-			fmt.Printf("==> [infra] Stopping existing port-forward for %s (PID %d)...\n", res.Name, pid)
+			p.StepStart("infra", fmt.Sprintf("Stopping existing port-forward for %s (PID %d)...", res.Name, pid))
 			if err := stopProcess(pid); err != nil {
 				// Log but don't fail - process might already be dead
-				fmt.Printf("    (Process may have already stopped)\n")
+				p.StepWarn("infra", "Process may have already stopped")
 			}
 			delete(state.PortForwards, res.Name)
 		}
@@ -182,7 +188,7 @@ func infraUp(args []string) error {
 
 	// Deploy each resource
 	for _, res := range resourcesToDeploy {
-		fmt.Printf("==> [infra] Deploying %s...\n", res.Name)
+		p.StepStart("infra", "Deploying "+res.Name+"...")
 
 		// Apply manifest
 		manifestPath, err := filepath.Abs(res.Manifest)
@@ -198,14 +204,14 @@ func infraUp(args []string) error {
 		}
 
 		// Wait for resource to be ready
-		fmt.Printf("    Waiting for %s to be ready...\n", res.Name)
+		p.Summary(fmt.Sprintf("    Waiting for %s to be ready...", res.Name))
 		if err := waitForReady(local.Namespace, res.ReadyCheck.Selector, 120*time.Second); err != nil {
 			return fmt.Errorf("resource %s failed to become ready: %w", res.Name, err)
 		}
 
 		// Start port-forward if configured
 		if res.PortForward != nil {
-			fmt.Printf("    Starting port-forward for %s (%d:%d)...\n", res.Name, res.PortForward.LocalPort, res.PortForward.TargetPort)
+			p.Summary(fmt.Sprintf("    Starting port-forward for %s (%d:%d)...", res.Name, res.PortForward.LocalPort, res.PortForward.TargetPort))
 			pid, err := startPortForward(local.Namespace, res.PortForward)
 			if err != nil {
 				return fmt.Errorf("failed to start port-forward for %s: %w", res.Name, err)
@@ -213,11 +219,11 @@ func infraUp(args []string) error {
 			state.PortForwards[res.Name] = pid
 		}
 
-		fmt.Printf("✓ %s ready\n", res.Name)
+		p.StepOK("infra", res.Name+" ready")
 		if res.PortForward != nil {
-			fmt.Printf("  Port-forward: localhost:%d\n", res.PortForward.LocalPort)
+			p.Summary(fmt.Sprintf("  Port-forward: localhost:%d", res.PortForward.LocalPort))
 		}
-		fmt.Println()
+		p.Blank()
 	}
 
 	// Save state
@@ -230,6 +236,8 @@ func infraUp(args []string) error {
 
 // infraDown tears down infrastructure resources
 func infraDown(args []string) error {
+	p := output.DefaultPrinter()
+
 	local, err := loadLocalConfig()
 	if err != nil {
 		return err
@@ -269,9 +277,9 @@ func infraDown(args []string) error {
 	// Stop port-forwards
 	for _, res := range resourcesToRemove {
 		if pid, exists := state.PortForwards[res.Name]; exists {
-			fmt.Printf("==> [infra] Stopping port-forward for %s (PID %d)...\n", res.Name, pid)
+			p.StepStart("infra", fmt.Sprintf("Stopping port-forward for %s (PID %d)...", res.Name, pid))
 			if err := stopProcess(pid); err != nil {
-				fmt.Fprintf(os.Stderr, "Warning: failed to stop port-forward: %v\n", err)
+				p.StepWarn("infra", fmt.Sprintf("failed to stop port-forward: %v", err))
 			}
 			delete(state.PortForwards, res.Name)
 		}
@@ -279,7 +287,7 @@ func infraDown(args []string) error {
 
 	// Delete manifests
 	for _, res := range resourcesToRemove {
-		fmt.Printf("==> [infra] Removing %s...\n", res.Name)
+		p.StepStart("infra", "Removing "+res.Name+"...")
 
 		manifestPath, err := filepath.Abs(res.Manifest)
 		if err != nil {
@@ -290,10 +298,11 @@ func infraDown(args []string) error {
 		deleteCmd.Stdout = os.Stdout
 		deleteCmd.Stderr = os.Stderr
 		if err := deleteCmd.Run(); err != nil {
-			fmt.Fprintf(os.Stderr, "Warning: failed to delete manifest for %s: %v\n", res.Name, err)
+			p.StepWarn("infra", fmt.Sprintf("failed to delete manifest for %s: %v", res.Name, err))
 		}
 
-		fmt.Printf("✓ %s removed\n\n", res.Name)
+		p.StepOK("infra", res.Name+" removed")
+		p.Blank()
 	}
 
 	// Save state
@@ -301,12 +310,14 @@ func infraDown(args []string) error {
 		return fmt.Errorf("failed to save state: %w", err)
 	}
 
-	fmt.Println("==> [infra] Infrastructure removed")
+	p.StepOK("infra", "Infrastructure removed")
 	return nil
 }
 
 // infraStatus shows the status of infrastructure resources
 func infraStatus() error {
+	p := output.DefaultPrinter()
+
 	local, err := loadLocalConfig()
 	if err != nil {
 		return err
@@ -322,10 +333,10 @@ func infraStatus() error {
 
 	state := loadState()
 
-	fmt.Println("Infrastructure Status:")
-	fmt.Println()
-	fmt.Printf("%-15s %-15s %-20s %-15s\n", "RESOURCE", "STATUS", "POD", "PORT-FORWARD")
-	fmt.Println(strings.Repeat("-", 70))
+	p.Section("Infrastructure Status")
+	p.Blank()
+	p.Summary(fmt.Sprintf("%-15s %-15s %-20s %-15s", "RESOURCE", "STATUS", "POD", "PORT-FORWARD"))
+	p.Summary(strings.Repeat("-", 70))
 
 	for _, res := range local.Resources {
 		// Check pod status
@@ -345,15 +356,16 @@ func infraStatus() error {
 			}
 		}
 
-		fmt.Printf("%-15s %-15s %-20s %-15s\n", res.Name, podStatus, res.ReadyCheck.Selector, pfStatus)
+		p.Summary(fmt.Sprintf("%-15s %-15s %-20s %-15s", res.Name, podStatus, res.ReadyCheck.Selector, pfStatus))
 	}
 
-	fmt.Println()
+	p.Blank()
 	return nil
 }
 
 // infraLogs tails logs from a specific resource
 func infraLogs(args []string) error {
+	p := output.DefaultPrinter()
 	if len(args) < 4 {
 		return fmt.Errorf("usage: mono infra logs <resource>")
 	}
@@ -383,7 +395,7 @@ func infraLogs(args []string) error {
 	}
 
 	// Tail logs
-	fmt.Printf("==> [infra] Tailing logs for %s...\n", resourceName)
+	p.StepStart("infra", "Tailing logs for "+resourceName+"...")
 	logsCmd := exec.Command("kubectl", "logs", "-n", local.Namespace, "-l", resource.ReadyCheck.Selector, "-f", "--tail=50") //nolint:gosec // G204: namespace validated by validateKubeName above; selector is a label string from services.yaml; no shell involved
 	logsCmd.Stdout = os.Stdout
 	logsCmd.Stderr = os.Stderr
@@ -529,18 +541,19 @@ func saveState(state *InfraState) error {
 
 // printInfraUsage prints usage information for infra commands
 func printInfraUsage() {
-	fmt.Println("mono infra - Infrastructure management")
-	fmt.Println()
-	fmt.Println("Usage:")
-	fmt.Println("  mono infra up [resource...]      Deploy local infrastructure")
-	fmt.Println("  mono infra down [resource...]    Tear down local infrastructure")
-	fmt.Println("  mono infra status                Show status of infrastructure")
-	fmt.Println("  mono infra logs <resource>       Tail logs from a resource")
-	fmt.Println()
-	fmt.Println("Examples:")
-	fmt.Println("  mono infra up                    Deploy all infrastructure")
-	fmt.Println("  mono infra up postgres           Deploy only postgres")
-	fmt.Println("  mono infra status                Check infrastructure status")
-	fmt.Println("  mono infra logs postgres         Tail postgres logs")
-	fmt.Println("  mono infra down                  Remove all infrastructure")
+	p := output.DefaultPrinter()
+	p.Summary("mono infra - Infrastructure management")
+	p.Blank()
+	p.Summary("Usage:")
+	p.Summary("  mono infra up [resource...]      Deploy local infrastructure")
+	p.Summary("  mono infra down [resource...]    Tear down local infrastructure")
+	p.Summary("  mono infra status                Show status of infrastructure")
+	p.Summary("  mono infra logs <resource>       Tail logs from a resource")
+	p.Blank()
+	p.Summary("Examples:")
+	p.Summary("  mono infra up                    Deploy all infrastructure")
+	p.Summary("  mono infra up postgres           Deploy only postgres")
+	p.Summary("  mono infra status                Check infrastructure status")
+	p.Summary("  mono infra logs postgres         Tail postgres logs")
+	p.Summary("  mono infra down                  Remove all infrastructure")
 }

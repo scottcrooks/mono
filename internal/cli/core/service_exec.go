@@ -7,6 +7,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+
+	"github.com/scottcrooks/mono/internal/cli/output"
 )
 
 // RunServiceCommand runs a registry-defined command (test, lint, build, etc.)
@@ -45,21 +47,23 @@ func RunServiceCommandWithConfig(config *Config, command string, args []string) 
 
 // RunCommand executes a command for a specific service.
 func RunCommand(svc Service, command string) error {
+	printer := output.DefaultPrinter()
+
 	cmdString, exists := svc.Commands[command]
 	if !exists && command == "dev" && strings.TrimSpace(svc.Dev) != "" {
 		cmdString = svc.Dev
 		exists = true
 	}
 	if !exists {
-		fmt.Printf("⊘ [%s] skipping (no '%s' command defined)\n", svc.Name, command)
+		printer.StepWarn(svc.Name, fmt.Sprintf("skipping (no %q command defined)", command))
 		return nil
 	}
 
-	fmt.Printf("==> [%s] %s\n", svc.Name, command)
+	printer.StepStart(svc.Name, command)
 
 	absPath, err := filepath.Abs(svc.Path)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error resolving path for %s: %v\n", svc.Name, err)
+		printer.StepErr(svc.Name, fmt.Sprintf("error resolving path: %v", err))
 		return err
 	}
 
@@ -75,11 +79,13 @@ func RunCommand(svc Service, command string) error {
 	cmd.Stdin = os.Stdin
 
 	if err := cmd.Run(); err != nil {
-		fmt.Fprintf(os.Stderr, "\n✗ [%s] %s failed\n", svc.Name, command)
+		printer.Blank()
+		printer.StepErr(svc.Name, command+" failed")
 		return err
 	}
 
-	fmt.Printf("✓ [%s] %s completed\n\n", svc.Name, command)
+	printer.StepOK(svc.Name, command+" completed")
+	printer.Blank()
 	return nil
 }
 

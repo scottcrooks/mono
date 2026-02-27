@@ -97,9 +97,9 @@ Use this as a validation grid against your PoC.
 - [ ] Basic cache diagnostics (“why miss?”)
 
 ## C5. Output UX
-- [ ] Clear segmented logs per project/task
-- [ ] Summary at end: succeeded / failed / skipped (cached)
-- [ ] Non-zero exit code on failure
+- [x] Clear segmented logs per project/task
+- [x] Summary at end: succeeded / failed / skipped (cached)
+- [x] Non-zero exit code on failure
 
 ---
 

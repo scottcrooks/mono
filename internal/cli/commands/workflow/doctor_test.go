@@ -69,7 +69,7 @@ func TestValidateManifestForDoctorValidationFailure(t *testing.T) {
 	if !strings.Contains(output, "[ERROR]") {
 		t.Fatalf("expected severity output, got %q", output)
 	}
-	if !strings.Contains(output, "[service=svc (apps/missing)]") {
+	if !strings.Contains(output, "service: svc (apps/missing)") {
 		t.Fatalf("expected service context in output, got %q", output)
 	}
 }
@@ -96,6 +96,68 @@ func TestValidateManifestForDoctorWarningOnly(t *testing.T) {
 	}
 	if !strings.Contains(output, "[WARNING]") {
 		t.Fatalf("expected warning detail output, got %q", output)
+	}
+	if !strings.Contains(output, "Warnings:") {
+		t.Fatalf("expected warning section heading, got %q", output)
+	}
+}
+
+func TestParseGoModToolsWithToolBlock(t *testing.T) {
+	repo := t.TempDir()
+	mustWrite(t, filepath.Join(repo, "go.mod"), `module example.com/test
+
+go 1.25
+
+tool (
+	// comment
+	github.com/golangci/golangci-lint/v2/cmd/golangci-lint
+	golang.org/x/vuln/cmd/govulncheck // inline comment
+)
+`)
+
+	prev, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	t.Cleanup(func() {
+		if chdirErr := os.Chdir(prev); chdirErr != nil {
+			t.Fatalf("restore working dir: %v", chdirErr)
+		}
+	})
+	if err := os.Chdir(repo); err != nil {
+		t.Fatalf("chdir repo: %v", err)
+	}
+
+	got, err := parseGoModTools()
+	if err != nil {
+		t.Fatalf("parseGoModTools returned error: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("expected 2 tools, got %d (%v)", len(got), got)
+	}
+	if got[0] != "github.com/golangci/golangci-lint/v2/cmd/golangci-lint" {
+		t.Fatalf("unexpected first tool: %q", got[0])
+	}
+	if got[1] != "golang.org/x/vuln/cmd/govulncheck" {
+		t.Fatalf("unexpected second tool: %q", got[1])
+	}
+}
+
+func TestToolBinaryName(t *testing.T) {
+	tests := []struct {
+		in   string
+		want string
+	}{
+		{in: "github.com/golangci/golangci-lint/v2/cmd/golangci-lint", want: "golangci-lint"},
+		{in: "golang.org/x/vuln/cmd/govulncheck", want: "govulncheck"},
+		{in: " stringer ", want: "stringer"},
+		{in: "", want: ""},
+	}
+
+	for _, tt := range tests {
+		if got := toolBinaryName(tt.in); got != tt.want {
+			t.Fatalf("toolBinaryName(%q) = %q, want %q", tt.in, got, tt.want)
+		}
 	}
 }
 

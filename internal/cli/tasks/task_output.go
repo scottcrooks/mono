@@ -1,6 +1,10 @@
 package tasks
 
-import "fmt"
+import (
+	"fmt"
+
+	"github.com/scottcrooks/mono/internal/cli/output"
+)
 
 type TaskRunStatus string
 
@@ -41,6 +45,7 @@ func summarizeTaskResults(results []TaskRunResult) TaskRunSummary {
 
 func PrintTaskSummary(results []TaskRunResult) {
 	summary := summarizeTaskResults(results)
-	fmt.Println()
-	fmt.Printf("Task summary: succeeded=%d failed=%d skipped=%d\n", summary.Succeeded, summary.Failed, summary.Skipped)
+	printer := output.DefaultPrinter()
+	printer.Blank()
+	printer.Summary(fmt.Sprintf("Task summary: succeeded=%d failed=%d skipped=%d", summary.Succeeded, summary.Failed, summary.Skipped))
 }

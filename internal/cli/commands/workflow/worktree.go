@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/scottcrooks/mono/internal/cli/output"
 	"gopkg.in/yaml.v3"
 )
 
@@ -68,6 +69,8 @@ func (c *worktreeCommand) Run(args []string) error {
 }
 
 func runWorktreeCreate(args []string) error {
+	p := output.DefaultPrinter()
+
 	branch, fromRef, uniqueID, noBootstrap, err := parseCreateArgs(args)
 	if err != nil {
 		return err
@@ -105,10 +108,10 @@ func runWorktreeCreate(args []string) error {
 		return fmt.Errorf("git worktree add failed: %w", runErr)
 	}
 
-	fmt.Printf("[ok] Created worktree for branch %q at %s\n", branch, dest)
+	p.StepOK("worktree", fmt.Sprintf("Created worktree for branch %q at %s", branch, dest))
 
 	if noBootstrap {
-		fmt.Println("[skip] Bootstrap skipped (--no-bootstrap)")
+		p.StepWarn("worktree", "Bootstrap skipped (--no-bootstrap)")
 		return nil
 	}
 
@@ -117,9 +120,9 @@ func runWorktreeCreate(args []string) error {
 		return err
 	}
 	if copied > 0 {
-		fmt.Printf("[ok] Copied %d .env file(s) into worktree\n", copied)
+		p.StepOK("worktree", fmt.Sprintf("Copied %d .env file(s) into worktree", copied))
 	} else {
-		fmt.Println("[skip] No .env files found to copy from apps/ or packages/")
+		p.StepWarn("worktree", "No .env files found to copy from apps/ or packages/")
 	}
 
 	if err := runBootstrap(dest); err != nil {
@@ -134,6 +137,8 @@ func runWorktreeCreate(args []string) error {
 }
 
 func runWorktreeList(args []string) error {
+	p := output.DefaultPrinter()
+
 	listState, err := parseListArgs(args)
 	if err != nil {
 		return err
@@ -144,7 +149,7 @@ func runWorktreeList(args []string) error {
 		return err
 	}
 	if len(entries) == 0 {
-		fmt.Println("No git worktrees found")
+		p.Summary("No git worktrees found")
 		return nil
 	}
 
@@ -188,10 +193,6 @@ func runWorktreeList(args []string) error {
 			}
 		}
 
-		fmt.Printf("%s\n", entry.Path)
-		fmt.Printf("  branch: %s\n", branch)
-		fmt.Printf("  head:   %s\n", shortSHA(entry.Head))
-		fmt.Printf("  status: %s\n", dirtyState)
 		workflowStatus := workflowStatusUnset
 		if tagged, ok := statusStore.Worktrees[normalizeWorktreePath(entry.Path)]; ok {
 			workflowStatus = tagged
@@ -201,14 +202,17 @@ func runWorktreeList(args []string) error {
 			continue
 		}
 
-		fmt.Printf("  workflow-status: %s\n", workflowStatus)
-		fmt.Printf("  merged(%s): %s\n", mergeBaseLabel, mergedState)
-		fmt.Println()
+		printWorktreeHeader(p, entry.Path, workflowStatus)
+		p.Summary("  branch: " + branch)
+		p.Summary("  head:   " + shortSHA(entry.Head))
+		p.Summary("  status: " + dirtyState)
+		p.Summary(fmt.Sprintf("  merged(%s): %s", mergeBaseLabel, mergedState))
+		p.Blank()
 		printed++
 	}
 
 	if printed == 0 && listState != worktreeListStateAll {
-		fmt.Printf("No worktrees matched --state %q\n", listState)
+		p.Summary(fmt.Sprintf("No worktrees matched --state %q", listState))
 	}
 
 	return nil
@@ -243,6 +247,7 @@ func runWorktreeTag(args []string) error {
 }
 
 func runWorktreePath(args []string) error {
+	p := output.DefaultPrinter()
 	if len(args) != 1 {
 		return fmt.Errorf("usage: mono worktree path <branch-or-id>")
 	}
@@ -252,11 +257,13 @@ func runWorktreePath(args []string) error {
 		return err
 	}
 
-	fmt.Println(entry.Path)
+	p.Summary(entry.Path)
 	return nil
 }
 
 func runWorktreeRemove(args []string) error {
+	p := output.DefaultPrinter()
+
 	identifier, force, err := parseRemoveArgs(args)
 	if err != nil {
 		return err
@@ -293,11 +300,13 @@ func runWorktreeRemove(args []string) error {
 		return err
 	}
 
-	fmt.Printf("[ok] Removed worktree %s\n", entry.Path)
+	p.StepOK("worktree", "Removed worktree "+entry.Path)
 	return nil
 }
 
 func runWorktreePrune() error {
+	p := output.DefaultPrinter()
+
 	cmd := exec.Command("git", "worktree", "prune")
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
@@ -307,7 +316,7 @@ func runWorktreePrune() error {
 	if err := pruneStaleWorktreeStatuses(); err != nil {
 		return err
 	}
-	fmt.Println("[ok] Pruned stale worktree metadata")
+	p.StepOK("worktree", "Pruned stale worktree metadata")
 	return nil
 }
 
@@ -462,6 +471,25 @@ func parseWorkflowStatus(input string) (worktreeWorkflowStatus, error) {
 		return status, nil
 	default:
 		return "", fmt.Errorf("invalid workflow status %q (expected one of: IN_PROGRESS, DONE, NEEDS_INPUT)", input)
+	}
+}
+
+func formatWorktreeHeader(path string, status worktreeWorkflowStatus) string {
+	label := "[" + string(status) + "]"
+	return path + " " + label
+}
+
+func printWorktreeHeader(p output.Printer, path string, status worktreeWorkflowStatus) {
+	header := formatWorktreeHeader(path, status)
+	switch status {
+	case workflowStatusDone:
+		p.StepOK("", header)
+	case workflowStatusInProgress:
+		p.StepInfo("", header)
+	case workflowStatusNeedsInput:
+		p.StepErr("", header)
+	default:
+		p.Summary(header)
 	}
 }
 
@@ -809,9 +837,11 @@ func isBranchMergedIntoBase(branch, base string) (bool, error) {
 }
 
 func runBootstrap(worktreePath string) error {
+	p := output.DefaultPrinter()
+
 	bootstrapScript := filepath.Join(worktreePath, "scripts", "bootstrap")
 	if info, err := os.Stat(bootstrapScript); err == nil && info.Mode().IsRegular() && info.Mode()&0o111 != 0 {
-		fmt.Printf("==> [worktree] Running bootstrap script: %s\n", bootstrapScript)
+		p.StepStart("worktree", "Running bootstrap script: "+bootstrapScript)
 		cmd := exec.Command(bootstrapScript)
 		cmd.Dir = worktreePath
 		cmd.Stdout = os.Stdout
@@ -819,14 +849,14 @@ func runBootstrap(worktreePath string) error {
 		if runErr := cmd.Run(); runErr != nil {
 			return fmt.Errorf("bootstrap script failed: %w", runErr)
 		}
-		fmt.Println("[ok] Bootstrap completed")
+		p.StepOK("worktree", "Bootstrap completed")
 		return nil
 	}
 
 	makefilePath := filepath.Join(worktreePath, "Makefile")
 	content, err := os.ReadFile(makefilePath)
 	if err == nil && hasDoctorTarget(string(content)) {
-		fmt.Println("==> [worktree] Running bootstrap command: make doctor")
+		p.StepStart("worktree", "Running bootstrap command: make doctor")
 		cmd := exec.Command("make", "doctor")
 		cmd.Dir = worktreePath
 		cmd.Stdout = os.Stdout
@@ -834,11 +864,11 @@ func runBootstrap(worktreePath string) error {
 		if runErr := cmd.Run(); runErr != nil {
 			return fmt.Errorf("bootstrap command failed (make doctor): %w", runErr)
 		}
-		fmt.Println("[ok] Bootstrap completed")
+		p.StepOK("worktree", "Bootstrap completed")
 		return nil
 	}
 
-	fmt.Println("[skip] No bootstrap command detected (checked scripts/bootstrap, Makefile doctor target)")
+	p.StepWarn("worktree", "No bootstrap command detected (checked scripts/bootstrap, Makefile doctor target)")
 	return nil
 }
 
@@ -937,11 +967,13 @@ func findProjectEnvFiles(repoRoot string) ([]string, error) {
 }
 
 func runWorktreeRequirements(worktreePath string) error {
+	p := output.DefaultPrinter()
+
 	configPath := filepath.Join(worktreePath, "services.yaml")
 	data, err := os.ReadFile(configPath)
 	if err != nil {
 		if os.IsNotExist(err) {
-			fmt.Println("[warn] services.yaml not found; skipping worktree requirements")
+			p.StepWarn("worktree", "services.yaml not found; skipping worktree requirements")
 			return nil
 		}
 		return fmt.Errorf("failed to read %s: %w", configPath, err)
@@ -955,11 +987,11 @@ func runWorktreeRequirements(worktreePath string) error {
 	for _, svc := range config.Services {
 		cmdString, exists := svc.Commands["reqs"]
 		if !exists {
-			fmt.Printf("[skip] [%s] no 'reqs' command defined\n", svc.Name)
+			p.StepWarn(svc.Name, "no 'reqs' command defined")
 			continue
 		}
 
-		fmt.Printf("==> [%s] reqs\n", svc.Name)
+		p.StepStart(svc.Name, "reqs")
 		servicePath := filepath.Join(worktreePath, svc.Path)
 
 		parts := strings.Fields(cmdString)
@@ -975,23 +1007,25 @@ func runWorktreeRequirements(worktreePath string) error {
 		if err := cmd.Run(); err != nil {
 			return fmt.Errorf("[%s] reqs failed: %w", svc.Name, err)
 		}
-		fmt.Printf("[ok] [%s] reqs completed\n\n", svc.Name)
+		p.StepOK(svc.Name, "reqs completed")
+		p.Blank()
 	}
 
 	return nil
 }
 
 func printWorktreeUsage() {
-	fmt.Println("mono worktree - Manage git worktrees for this repository")
-	fmt.Println()
-	fmt.Println("Usage:")
-	fmt.Println("  mono worktree create <branch> [--from <ref>] [--id <unique-id>] [--no-bootstrap]")
-	fmt.Println("  mono worktree list [--state <active|needs-input|done>]")
-	fmt.Println("  mono worktree path <branch-or-id>")
-	fmt.Println("  mono worktree tag <IN_PROGRESS|DONE|NEEDS_INPUT>")
-	fmt.Println("  mono worktree remove <branch-or-id> [--force]")
-	fmt.Println("  mono worktree prune")
-	fmt.Println()
-	fmt.Println("Convention:")
-	fmt.Println("  Worktrees are created at ~/.worktrees/<repo>/<unique-id>/")
+	p := output.DefaultPrinter()
+	p.Summary("mono worktree - Manage git worktrees for this repository")
+	p.Blank()
+	p.Summary("Usage:")
+	p.Summary("  mono worktree create <branch> [--from <ref>] [--id <unique-id>] [--no-bootstrap]")
+	p.Summary("  mono worktree list [--state <active|needs-input|done>]")
+	p.Summary("  mono worktree path <branch-or-id>")
+	p.Summary("  mono worktree tag <IN_PROGRESS|DONE|NEEDS_INPUT>")
+	p.Summary("  mono worktree remove <branch-or-id> [--force]")
+	p.Summary("  mono worktree prune")
+	p.Blank()
+	p.Summary("Convention:")
+	p.Summary("  Worktrees are created at ~/.worktrees/<repo>/<unique-id>/")
 }

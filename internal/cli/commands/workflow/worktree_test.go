@@ -191,6 +191,17 @@ func TestParseTagArgsMissing(t *testing.T) {
 	}
 }
 
+func TestFormatWorktreeHeader(t *testing.T) {
+	t.Parallel()
+
+	if got := formatWorktreeHeader("/tmp/wt", workflowStatusDone); got != "/tmp/wt [DONE]" {
+		t.Fatalf("header mismatch: got %q", got)
+	}
+	if got := formatWorktreeHeader("/tmp/wt", workflowStatusInProgress); got != "/tmp/wt [IN_PROGRESS]" {
+		t.Fatalf("header mismatch: got %q", got)
+	}
+}
+
 func TestSanitizeSlug(t *testing.T) {
 	t.Parallel()
 

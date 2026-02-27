@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+
+	"github.com/scottcrooks/mono/internal/cli/output"
 )
 
 type checkCLICommand struct{}
@@ -15,6 +17,8 @@ func init() {
 }
 
 func (c *checkCLICommand) Run(args []string) error {
+	printer := output.DefaultPrinter()
+
 	baseRef, opts, err := parseCheckArgs(args[2:])
 	if err != nil {
 		return err
@@ -31,7 +35,7 @@ func (c *checkCLICommand) Run(args []string) error {
 	}
 
 	if len(report.Impacted) == 0 {
-		fmt.Println("No impacted services. Nothing to check.")
+		printer.Summary("No impacted services. Nothing to check.")
 		return nil
 	}
 
@@ -43,7 +47,7 @@ func (c *checkCLICommand) Run(args []string) error {
 		}
 
 		phaseCount++
-		fmt.Printf("==> check phase: %s (%d service(s))\n", phase.Task, len(phase.Services))
+		printer.StepStart("check phase", fmt.Sprintf("%s (%d service(s))", phase.Task, len(phase.Services)))
 
 		results, phaseErr := runCheckTaskPhase(cfg, TaskRequest{
 			Task:          phase.Task,
@@ -57,11 +61,11 @@ func (c *checkCLICommand) Run(args []string) error {
 	}
 
 	if phaseCount == 0 {
-		fmt.Println("No pending check tasks for impacted services.")
+		printer.Summary("No pending check tasks for impacted services.")
 		return nil
 	}
 
-	fmt.Printf("Check complete: impacted=%d phases=%d\n", len(plan.ImpactedServices), phaseCount)
+	printer.Summary(fmt.Sprintf("Check complete: impacted=%d phases=%d", len(plan.ImpactedServices), phaseCount))
 	return nil
 }
 

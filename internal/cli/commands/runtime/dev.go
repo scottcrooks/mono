@@ -4,7 +4,6 @@ package runtimecmd
 import (
 	"context"
 	"fmt"
-	"io"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -12,6 +11,8 @@ import (
 	"sync"
 	"syscall"
 	"time"
+
+	"github.com/scottcrooks/mono/internal/cli/output"
 )
 
 type devCommand struct{}
@@ -22,6 +23,8 @@ func init() {
 
 // Run starts all services with dev commands concurrently
 func (c *devCommand) Run(args []string) error {
+	p := output.DefaultPrinter()
+
 	// Load config
 	config, err := loadConfig()
 	if err != nil {
@@ -50,7 +53,7 @@ func (c *devCommand) Run(args []string) error {
 	}
 
 	if len(servicesToRun) == 0 {
-		fmt.Println("No services with 'dev' command found")
+		p.Summary("No services with 'dev' command found")
 		return nil
 	}
 
@@ -87,7 +90,8 @@ func (c *devCommand) Run(args []string) error {
 	// Wait for shutdown signal in separate goroutine
 	go func() {
 		<-sigChan
-		fmt.Println("\n⊙ Shutting down all services...")
+		p.Blank()
+		p.StepWarn("dev", "Shutting down all services...")
 		cancel()
 	}()
 
@@ -102,7 +106,8 @@ func (c *devCommand) Run(args []string) error {
 	}
 
 	if len(errors) > 0 {
-		fmt.Println("\nErrors occurred:")
+		p.Blank()
+		p.StepErr("dev", "Errors occurred:")
 		for _, err := range errors {
 			fmt.Fprintf(os.Stderr, "  %v\n", err)
 		}
@@ -116,6 +121,8 @@ func (c *devCommand) Run(args []string) error {
 // auto-starts any local infrastructure resources that are not already running.
 // It does NOT tear them down on exit — infrastructure persists between dev sessions.
 func ensureInfraDeps(config *Config, services []Service) error {
+	p := output.DefaultPrinter()
+
 	if config.Local == nil {
 		return nil
 	}
@@ -152,11 +159,11 @@ func ensureInfraDeps(config *Config, services []Service) error {
 		}
 
 		if isInfraResourceRunning(config.Local, *resource, state) {
-			fmt.Printf("==> [infra] %s already running\n", depName)
+			p.StepWarn("infra", depName+" already running")
 			continue
 		}
 
-		fmt.Printf("==> [infra] Starting dependency: %s\n", depName)
+		p.StepStart("infra", "Starting dependency: "+depName)
 		// Reuse infraUp by passing the resource name; build synthetic args slice
 		syntheticArgs := []string{"mono", "infra", "up", depName}
 		if err := infraUp(syntheticArgs); err != nil {
@@ -169,6 +176,7 @@ func ensureInfraDeps(config *Config, services []Service) error {
 
 // runServiceDev runs a single service's dev command
 func runServiceDev(ctx context.Context, svc Service) error {
+	p := output.DefaultPrinter()
 	cmdString, exists := svc.Commands["dev"]
 	if !exists {
 		cmdString = strings.TrimSpace(svc.Dev)
@@ -194,22 +202,16 @@ func runServiceDev(ctx context.Context, svc Service) error {
 	cmd.Dir = absPath
 
 	// Create prefix writer for stdout
-	stdoutWriter := &PrefixWriter{
-		prefix: fmt.Sprintf("[%s]", svc.Name),
-		writer: os.Stdout,
-	}
+	stdoutWriter := output.NewPrefixWriter(fmt.Sprintf("[%s]", svc.Name), os.Stdout)
 
 	// Create prefix writer for stderr
-	stderrWriter := &PrefixWriter{
-		prefix: fmt.Sprintf("[%s]", svc.Name),
-		writer: os.Stderr,
-	}
+	stderrWriter := output.NewPrefixWriter(fmt.Sprintf("[%s]", svc.Name), os.Stderr)
 
 	cmd.Stdout = stdoutWriter
 	cmd.Stderr = stderrWriter
 
 	// Start the process
-	fmt.Printf("[%s] Starting...\n", svc.Name)
+	p.StepStart(svc.Name, "Starting...")
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("failed to start: %w", err)
 	}
@@ -223,7 +225,7 @@ func runServiceDev(ctx context.Context, svc Service) error {
 	select {
 	case <-ctx.Done():
 		// Context cancelled, attempt graceful shutdown
-		fmt.Printf("[%s] Stopping...\n", svc.Name)
+		p.StepWarn(svc.Name, "Stopping...")
 
 		// Send interrupt signal
 		if err := cmd.Process.Signal(os.Interrupt); err != nil {
@@ -234,11 +236,11 @@ func runServiceDev(ctx context.Context, svc Service) error {
 		// Wait for process to exit with timeout
 		select {
 		case <-done:
-			fmt.Printf("[%s] Stopped gracefully\n", svc.Name)
+			p.StepOK(svc.Name, "Stopped gracefully")
 		case <-time.After(5 * time.Second):
 			// Force kill after timeout
 			_ = cmd.Process.Kill()
-			fmt.Printf("[%s] Stopped (forced)\n", svc.Name)
+			p.StepWarn(svc.Name, "Stopped (forced)")
 		}
 		return nil
 
@@ -251,7 +253,7 @@ func runServiceDev(ctx context.Context, svc Service) error {
 			}
 			return fmt.Errorf("exited with error: %w", err)
 		}
-		fmt.Printf("[%s] Exited\n", svc.Name)
+		p.StepOK(svc.Name, "Exited")
 		return nil
 	}
 }
@@ -261,65 +263,4 @@ func hasDevCommand(svc Service) bool {
 		return true
 	}
 	return strings.TrimSpace(svc.Dev) != ""
-}
-
-// PrefixWriter wraps an io.Writer and prefixes each line with a service name
-type PrefixWriter struct {
-	prefix string
-	writer io.Writer
-	mu     sync.Mutex
-	buffer []byte
-}
-
-// Write implements io.Writer
-func (pw *PrefixWriter) Write(p []byte) (n int, err error) {
-	pw.mu.Lock()
-	defer pw.mu.Unlock()
-
-	// Append to buffer
-	pw.buffer = append(pw.buffer, p...)
-
-	// Process complete lines
-	for {
-		idx := -1
-		for i, b := range pw.buffer {
-			if b == '\n' {
-				idx = i
-				break
-			}
-		}
-
-		if idx == -1 {
-			// No complete line yet
-			break
-		}
-
-		// Extract line (including newline)
-		line := pw.buffer[:idx+1]
-		pw.buffer = pw.buffer[idx+1:]
-
-		// Write prefixed line
-		prefixedLine := fmt.Sprintf("%s %s", pw.prefix, string(line))
-		if _, err := pw.writer.Write([]byte(prefixedLine)); err != nil {
-			return 0, err
-		}
-	}
-
-	return len(p), nil
-}
-
-// Flush writes any remaining buffered data
-func (pw *PrefixWriter) Flush() error {
-	pw.mu.Lock()
-	defer pw.mu.Unlock()
-
-	if len(pw.buffer) > 0 {
-		prefixedLine := fmt.Sprintf("%s %s\n", pw.prefix, string(pw.buffer))
-		if _, err := pw.writer.Write([]byte(prefixedLine)); err != nil {
-			return err
-		}
-		pw.buffer = nil
-	}
-
-	return nil
 }

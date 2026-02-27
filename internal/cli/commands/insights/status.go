@@ -3,6 +3,8 @@ package insights
 import (
 	"fmt"
 	"strings"
+
+	"github.com/scottcrooks/mono/internal/cli/output"
 )
 
 type statusCommand struct{}
@@ -12,6 +14,8 @@ func init() {
 }
 
 func (c *statusCommand) Run(args []string) error {
+	printer := output.DefaultPrinter()
+
 	baseRef, err := parseStatusArgs(args[2:])
 	if err != nil {
 		return err
@@ -28,11 +32,11 @@ func (c *statusCommand) Run(args []string) error {
 	}
 	rows := buildCheckTaskPreview(cfg, report.Impacted)
 
-	printStatusSection("Changed services", report.Changed)
-	fmt.Println()
-	printStatusSection("Impacted services", report.Impacted)
-	fmt.Println()
-	printCheckTaskSection(rows)
+	printStatusSection(printer, "Changed services", report.Changed)
+	printer.Blank()
+	printStatusSection(printer, "Impacted services", report.Impacted)
+	printer.Blank()
+	printCheckTaskSection(printer, rows)
 	return nil
 }
 
@@ -61,21 +65,21 @@ func parseStatusArgs(args []string) (baseRef string, err error) {
 	return baseRef, nil
 }
 
-func printStatusSection(title string, items []string) {
-	fmt.Printf("%s:\n", title)
+func printStatusSection(printer output.Printer, title string, items []string) {
+	printer.Summary(title + ":")
 	if len(items) == 0 {
-		fmt.Println("  (none)")
+		printer.Summary("  (none)")
 		return
 	}
 	for _, item := range items {
-		fmt.Printf("  - %s\n", item)
+		printer.Summary("  - " + item)
 	}
 }
 
-func printCheckTaskSection(rows []CheckTaskPreview) {
-	fmt.Println("Planned check tasks:")
+func printCheckTaskSection(printer output.Printer, rows []CheckTaskPreview) {
+	printer.Summary("Planned check tasks:")
 	if len(rows) == 0 {
-		fmt.Println("  (none)")
+		printer.Summary("  (none)")
 		return
 	}
 	for _, row := range rows {
@@ -87,6 +91,6 @@ func printCheckTaskSection(rows []CheckTaskPreview) {
 		if len(row.Missing) > 0 {
 			missing = strings.Join(row.Missing, ", ")
 		}
-		fmt.Printf("  - %s: run [%s], skip [%s]\n", row.Service, present, missing)
+		printer.Summary(fmt.Sprintf("  - %s: run [%s], skip [%s]", row.Service, present, missing))
 	}
 }

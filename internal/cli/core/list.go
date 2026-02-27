@@ -4,22 +4,23 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+
+	"github.com/scottcrooks/mono/internal/cli/output"
 )
 
 // ListServices prints all configured services and commands.
 func ListServices(config *Config, availableTasks func(Service) []string) {
-	fmt.Println("Available services:")
-	fmt.Println()
+	p := output.DefaultPrinter()
+	p.Summary("Available services:")
+	p.Blank()
 
 	for _, svc := range config.Services {
-		fmt.Printf("  %s - %s\n", svc.Name, svc.Description)
-		fmt.Printf("    Path: %s\n", svc.Path)
+		p.Summary(fmt.Sprintf("  %s - %s", svc.Name, svc.Description))
+		p.Summary(fmt.Sprintf("    Path: %s", svc.Path))
 
 		if len(svc.Depends) > 0 {
-			fmt.Printf("    Depends: %s\n", strings.Join(svc.Depends, ", "))
+			p.Summary(fmt.Sprintf("    Depends: %s", strings.Join(svc.Depends, ", ")))
 		}
-
-		fmt.Printf("    Commands: ")
 
 		cmds := make([]string, 0, len(svc.Commands)+8)
 		for _, task := range availableTasks(svc) {
@@ -33,27 +34,19 @@ func ListServices(config *Config, availableTasks func(Service) []string) {
 		}
 		sort.Strings(cmds)
 
-		if len(cmds) > 0 {
-			for i, cmd := range cmds {
-				if i > 0 {
-					fmt.Print(", ")
-				}
-				fmt.Print(cmd)
-			}
-		}
-		fmt.Println()
-		fmt.Println()
+		p.Summary(fmt.Sprintf("    Commands: %s", strings.Join(cmds, ", ")))
+		p.Blank()
 	}
 
 	if config.Local != nil && len(config.Local.Resources) > 0 {
-		fmt.Println("Local infrastructure resources:")
-		fmt.Println()
+		p.Summary("Local infrastructure resources:")
+		p.Blank()
 		for _, res := range config.Local.Resources {
-			fmt.Printf("  %s - %s\n", res.Name, res.Description)
+			p.Summary(fmt.Sprintf("  %s - %s", res.Name, res.Description))
 			if res.PortForward != nil {
-				fmt.Printf("    Port-forward: localhost:%d -> %s:%d\n", res.PortForward.LocalPort, res.PortForward.Target, res.PortForward.TargetPort)
+				p.Summary(fmt.Sprintf("    Port-forward: localhost:%d -> %s:%d", res.PortForward.LocalPort, res.PortForward.Target, res.PortForward.TargetPort))
 			}
-			fmt.Println()
+			p.Blank()
 		}
 	}
 }

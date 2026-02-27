@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/scottcrooks/mono/internal/cli/core"
+	"github.com/scottcrooks/mono/internal/cli/output"
 	"github.com/scottcrooks/mono/internal/cli/validation"
 )
 
@@ -21,156 +22,162 @@ func init() {
 
 // Run performs environment health checks and fixes
 func (c *doctorCommand) Run(_ []string) error {
-	fmt.Println("🔍 Checking development environment...")
-	fmt.Println()
+	p := output.DefaultPrinter()
+	p.Section("Checking development environment...")
+	p.Blank()
 
 	hasErrors := false
 
 	// Check Go
 	goInstalled := false
-	fmt.Print("Go (1.25.7+): ")
+	p.Summary("Go (1.25.7+):")
 	if err := checkCommand("go", "version"); err != nil {
-		fmt.Println("  ✗ Go is NOT installed")
-		fmt.Println("  → Install from: https://go.dev/dl/")
+		p.StepErr("doctor", "Go is NOT installed")
+		p.Summary("  Install from: https://go.dev/dl/")
 		hasErrors = true
 	} else {
 		goInstalled = true
 		cmd := exec.Command("go", "version")
 		if output, err := cmd.Output(); err == nil {
-			fmt.Println(strings.TrimSpace(string(output)))
-			fmt.Println("  ✓ Go is installed")
+			p.Summary(strings.TrimSpace(string(output)))
+			p.StepOK("doctor", "Go is installed")
 		}
 	}
-	fmt.Println()
+	p.Blank()
 
 	// Check go fix support (required by verification workflow)
 	if goInstalled {
-		fmt.Print("go fix support: ")
+		p.Summary("go fix support:")
 		if err := checkGoFixSupport(); err != nil {
-			fmt.Println("  ✗ go fix is NOT available")
-			fmt.Printf("  → %v\n", err)
+			p.StepErr("doctor", "go fix is NOT available")
+			p.Summary(fmt.Sprintf("  %v", err))
 			printGoToolchainDiagnostics()
-			fmt.Println("  → Reinstall/upgrade Go from: https://go.dev/dl/")
+			p.Summary("  Reinstall/upgrade Go from: https://go.dev/dl/")
 			hasErrors = true
 		} else {
-			fmt.Println("available")
-			fmt.Println("  ✓ go fix is available")
+			p.Summary("available")
+			p.StepOK("doctor", "go fix is available")
 		}
-		fmt.Println()
+		p.Blank()
 	}
 
 	// Check Node.js
-	fmt.Print("Node.js (22.x+): ")
+	p.Summary("Node.js (22.x+):")
 	if err := checkCommand("node", "--version"); err != nil {
-		fmt.Println("  ✗ Node.js is NOT installed")
-		fmt.Println("  → Install from: https://nodejs.org/ or use nvm")
+		p.StepErr("doctor", "Node.js is NOT installed")
+		p.Summary("  Install from: https://nodejs.org/ or use nvm")
 		hasErrors = true
 	} else {
 		cmd := exec.Command("node", "--version")
 		if output, err := cmd.Output(); err == nil {
-			fmt.Println(strings.TrimSpace(string(output)))
-			fmt.Println("  ✓ Node.js is installed")
+			p.Summary(strings.TrimSpace(string(output)))
+			p.StepOK("doctor", "Node.js is installed")
 		}
 	}
-	fmt.Println()
+	p.Blank()
 
 	// Check pnpm (auto-install if missing)
-	fmt.Print("pnpm (10.x+): ")
+	p.Summary("pnpm (10.x+):")
 	if err := checkCommand("pnpm", "--version"); err != nil {
-		fmt.Println("  ✗ pnpm is NOT installed")
-		fmt.Println("  → Installing pnpm...")
+		p.StepErr("doctor", "pnpm is NOT installed")
+		p.StepStart("doctor", "Installing pnpm...")
 		installCmd := exec.Command("npm", "install", "-g", "pnpm")
 		installCmd.Stdout = os.Stdout
 		installCmd.Stderr = os.Stderr
 		if err := installCmd.Run(); err != nil {
-			fmt.Println("  ✗ Failed to install pnpm")
+			p.StepErr("doctor", "Failed to install pnpm")
 			hasErrors = true
 		} else {
-			fmt.Println("  ✓ pnpm installed successfully")
+			p.StepOK("doctor", "pnpm installed successfully")
 		}
 	} else {
 		cmd := exec.Command("pnpm", "--version")
 		if output, err := cmd.Output(); err == nil {
-			fmt.Println(strings.TrimSpace(string(output)))
-			fmt.Println("  ✓ pnpm is installed")
+			p.Summary(strings.TrimSpace(string(output)))
+			p.StepOK("doctor", "pnpm is installed")
 		}
 	}
-	fmt.Println()
+	p.Blank()
 
 	if hasErrors {
 		return fmt.Errorf("missing critical dependencies")
 	}
 
 	// Check kubectl (optional - only needed for mono infra)
-	fmt.Print("kubectl (optional): ")
+	p.Summary("kubectl (optional):")
 	if err := checkCommand("kubectl", "version", "--client"); err != nil {
-		fmt.Println("not installed")
+		p.Summary("not installed")
 	} else {
 		cmd := exec.Command("kubectl", "version", "--client")
 		if output, err := cmd.Output(); err == nil {
 			// Extract just the version line
 			lines := strings.Split(string(output), "\n")
 			if len(lines) > 0 {
-				fmt.Println(strings.TrimSpace(lines[0]))
+				p.Summary(strings.TrimSpace(lines[0]))
 			}
 		}
 	}
-	fmt.Println()
+	p.Blank()
 
 	// Install Go tools from go.mod
-	fmt.Println("📦 Installing Go tools from go.mod...")
+	p.StepStart("doctor", "Checking Go tools from go.mod...")
 	if !fileExists("go.mod") {
-		fmt.Println("  ⚠ Warning: go.mod not found; skipping Go tool installation")
+		p.StepWarn("doctor", "go.mod not found; skipping Go tool installation")
 	} else {
-		if err := installGoTools(); err != nil {
-			fmt.Fprintf(os.Stderr, "  ✗ Failed to install Go tools: %v\n", err)
+		installed, err := installGoTools()
+		if err != nil {
+			p.StepErr("doctor", fmt.Sprintf("Failed to install Go tools: %v", err))
 			return err
 		}
-		fmt.Println("  ✓ Go tools installed")
+		if installed == 0 {
+			p.StepOK("doctor", "Go tools already installed")
+		} else {
+			p.StepOK("doctor", fmt.Sprintf("Installed %d missing Go tool(s)", installed))
+		}
 	}
-	fmt.Println()
+	p.Blank()
 
 	// Install pnpm dependencies
-	fmt.Println("📦 Installing pnpm dependencies...")
+	p.StepStart("doctor", "Installing pnpm dependencies...")
 	if !fileExists("package.json") {
-		fmt.Println("  ⚠ Warning: package.json not found; skipping pnpm install")
+		p.StepWarn("doctor", "package.json not found; skipping pnpm install")
 	} else {
 		pnpmCmd := exec.Command("pnpm", "install", "--frozen-lockfile")
 		pnpmCmd.Stdout = os.Stdout
 		pnpmCmd.Stderr = os.Stderr
 		if err := pnpmCmd.Run(); err != nil {
-			fmt.Fprintf(os.Stderr, "  ✗ Failed to install pnpm dependencies: %v\n", err)
+			p.StepErr("doctor", fmt.Sprintf("Failed to install pnpm dependencies: %v", err))
 			return err
 		}
-		fmt.Println("  ✓ pnpm dependencies installed")
+		p.StepOK("doctor", "pnpm dependencies installed")
 	}
-	fmt.Println()
+	p.Blank()
 
 	// Verify mono tool
-	fmt.Println("🔧 Verifying mono tool...")
+	p.StepStart("doctor", "Verifying mono tool...")
 	if !fileExists("services.yaml") {
-		fmt.Println("  ⚠ Warning: services.yaml not found; skipping service verification")
+		p.StepWarn("doctor", "services.yaml not found; skipping service verification")
 	} else {
 		if err := listServices(); err != nil {
 			return err
 		}
-		fmt.Println()
+		p.Blank()
 		if err := validateManifestForDoctor("services.yaml", os.Stdout); err != nil {
 			return err
 		}
 	}
-	fmt.Println()
+	p.Blank()
 
 	// Install repo-managed git hooks
-	fmt.Println("🪝 Installing git hooks...")
+	p.StepStart("doctor", "Installing git hooks...")
 	if err := installGitHooks(); err != nil {
-		fmt.Fprintf(os.Stderr, "  ✗ Failed to install git hooks: %v\n", err)
+		p.StepErr("doctor", fmt.Sprintf("Failed to install git hooks: %v", err))
 		return err
 	}
-	fmt.Println("  ✓ Git hooks configured")
-	fmt.Println()
+	p.StepOK("doctor", "Git hooks configured")
+	p.Blank()
 
-	fmt.Println("✅ All checks passed! Environment is ready.")
+	p.StepOK("doctor", "All checks passed! Environment is ready.")
 	return nil
 }
 
@@ -182,26 +189,40 @@ func checkCommand(name string, args ...string) error {
 	return cmd.Run()
 }
 
-// installGoTools reads go.mod and installs all tools from the tool directive
-func installGoTools() error {
+// installGoTools reads go.mod and installs only missing tools from the tool directive.
+func installGoTools() (int, error) {
+	p := output.DefaultPrinter()
 	tools, err := parseGoModTools()
 	if err != nil {
-		return fmt.Errorf("failed to parse go.mod: %w", err)
+		return 0, fmt.Errorf("failed to parse go.mod: %w", err)
+	}
+	if len(tools) == 0 {
+		p.Summary("  No Go tools declared in go.mod")
+		return 0, nil
 	}
 
-	for _, tool := range tools {
-		fmt.Printf("  → Installing %s...\n", tool)
+	missing := missingGoTools(tools)
+	if len(missing) == 0 {
+		p.Summary("  All declared Go tools are already available")
+		return 0, nil
+	}
+
+	installed := 0
+	for _, tool := range missing {
+		p.Summary(fmt.Sprintf("  Installing missing tool %s...", tool))
 		//nolint:gosec // G204: tool paths are from go.mod, trusted input
-		cmd := exec.Command("go", "install", tool+"@latest")
+		cmd := exec.Command("go", "install", tool)
 		cmd.Stdout = nil // Suppress output unless there's an error
 		cmd.Stderr = os.Stderr
 		if err := cmd.Run(); err != nil {
 			// Don't fail on individual tool errors, just report and continue
-			fmt.Fprintf(os.Stderr, "    ⚠ Warning: failed to install %s\n", tool)
+			p.StepWarn("doctor", fmt.Sprintf("failed to install %s", tool))
+			continue
 		}
+		installed++
 	}
 
-	return nil
+	return installed, nil
 }
 
 // parseGoModTools extracts tool directives from go.mod
@@ -237,7 +258,14 @@ func parseGoModTools() ([]string, error) {
 
 		// Inside tool block - extract tool path
 		if inToolBlock && trimmed != "" {
-			tools = append(tools, trimmed)
+			if strings.HasPrefix(trimmed, "//") {
+				continue
+			}
+			fields := strings.Fields(trimmed)
+			if len(fields) == 0 {
+				continue
+			}
+			tools = append(tools, fields[0])
 		}
 	}
 
@@ -246,6 +274,38 @@ func parseGoModTools() ([]string, error) {
 	}
 
 	return tools, nil
+}
+
+func missingGoTools(tools []string) []string {
+	var missing []string
+	for _, tool := range tools {
+		if !isGoToolAvailable(tool) {
+			missing = append(missing, tool)
+		}
+	}
+	return missing
+}
+
+func isGoToolAvailable(tool string) bool {
+	name := toolBinaryName(tool)
+	cmd := exec.Command("go", "tool", name, "-h")
+	output, err := cmd.CombinedOutput()
+	if err == nil {
+		return true
+	}
+
+	combined := string(output)
+	return !strings.Contains(combined, fmt.Sprintf(`no such tool "%s"`, name))
+}
+
+func toolBinaryName(toolPath string) string {
+	trimmed := strings.TrimSpace(toolPath)
+	if trimmed == "" {
+		return ""
+	}
+
+	parts := strings.Split(trimmed, "/")
+	return parts[len(parts)-1]
 }
 
 // checkGoFixSupport verifies go fix can execute its underlying toolchain command.
@@ -276,25 +336,29 @@ func checkGoFixSupport() error {
 }
 
 func printGoToolchainDiagnostics() {
+	p := output.DefaultPrinter()
+
 	cmd := exec.Command("go", "env", "GOROOT", "GOTOOLDIR", "GOVERSION")
 	output, err := cmd.Output()
 	if err != nil {
-		fmt.Println("  → Unable to read Go toolchain diagnostics")
+		p.Summary("  Unable to read Go toolchain diagnostics")
 		return
 	}
 
 	lines := strings.Split(strings.TrimSpace(string(output)), "\n")
 	if len(lines) >= 3 {
-		fmt.Printf("  → Go version: %s\n", lines[2])
-		fmt.Printf("  → GOROOT: %s\n", lines[0])
-		fmt.Printf("  → GOTOOLDIR: %s\n", lines[1])
+		p.Summary(fmt.Sprintf("  Go version: %s", lines[2]))
+		p.Summary(fmt.Sprintf("  GOROOT: %s", lines[0]))
+		p.Summary(fmt.Sprintf("  GOTOOLDIR: %s", lines[1]))
 	}
 }
 
 func installGitHooks() error {
+	p := output.DefaultPrinter()
+
 	// Skip outside git worktrees.
 	if err := checkCommand("git", "rev-parse", "--is-inside-work-tree"); err != nil {
-		fmt.Println("  ! Not in a git repository; skipping hook setup")
+		p.StepWarn("doctor", "Not in a git repository; skipping hook setup")
 		return nil
 	}
 
@@ -328,16 +392,31 @@ func fileExists(path string) bool {
 }
 
 func validateManifestForDoctor(path string, out io.Writer) error {
-	fmt.Fprintln(out, "🧭 Validating manifest policy...")
+	mode := output.DetectMode(out)
+	fmt.Fprintln(out, output.ApplyStyle(mode, output.StyleInfo, "🧭 Validating manifest policy..."))
 	report, err := validation.ValidateServicesManifest(path)
 	if err != nil {
 		return err
 	}
 
-	fmt.Fprintf(out, "  Summary: %d error(s), %d warning(s)\n", report.ErrorCount(), report.WarningCount())
+	summaryStyle := output.StyleSuccess
+	if report.HasErrors() {
+		summaryStyle = output.StyleError
+	} else if report.WarningCount() > 0 {
+		summaryStyle = output.StyleWarn
+	}
+	fmt.Fprintf(out, "  %s\n", output.ApplyStyle(mode, summaryStyle,
+		fmt.Sprintf("Summary: %d error(s), %d warning(s)", report.ErrorCount(), report.WarningCount())))
 	if len(report.Diagnostics) == 0 {
 		fmt.Fprintln(out, "  ✓ Manifest policy checks passed")
 		return nil
+	}
+
+	if report.HasErrors() {
+		fmt.Fprintf(out, "  %s\n", output.ApplyStyle(mode, output.StyleError, "Errors:"))
+	}
+	if report.WarningCount() > 0 {
+		fmt.Fprintf(out, "  %s\n", output.ApplyStyle(mode, output.StyleWarn, "Warnings:"))
 	}
 
 	for _, diag := range report.Diagnostics {
@@ -345,15 +424,21 @@ func validateManifestForDoctor(path string, out io.Writer) error {
 		if level == "" {
 			level = "ERROR"
 		}
-		serviceSuffix := ""
-		if strings.TrimSpace(diag.Service) != "" {
-			serviceSuffix = fmt.Sprintf(" [service=%s]", diag.Service)
+		labelStyle := output.StyleError
+		if strings.EqualFold(level, "WARNING") {
+			labelStyle = output.StyleWarn
 		}
+		location := diag.Path
 		if diag.Line > 0 {
-			fmt.Fprintf(out, "    - [%s] [%s] %s:%d:%d %s%s\n", level, diag.Code, diag.Path, diag.Line, diag.Column, diag.Message, serviceSuffix)
-			continue
+			location = fmt.Sprintf("%s:%d:%d", diag.Path, diag.Line, diag.Column)
 		}
-		fmt.Fprintf(out, "    - [%s] [%s] %s %s%s\n", level, diag.Code, diag.Path, diag.Message, serviceSuffix)
+
+		label := output.ApplyStyle(mode, labelStyle, "["+level+"]")
+		fmt.Fprintf(out, "    - %s [%s] %s\n", label, diag.Code, location)
+		fmt.Fprintf(out, "      %s\n", diag.Message)
+		if strings.TrimSpace(diag.Service) != "" {
+			fmt.Fprintf(out, "      service: %s\n", diag.Service)
+		}
 	}
 	if !report.HasErrors() {
 		fmt.Fprintln(out, "  ✓ Manifest policy checks passed with warnings")

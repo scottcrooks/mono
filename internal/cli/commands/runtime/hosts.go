@@ -6,6 +6,8 @@ import (
 	"os"
 	"regexp"
 	"strings"
+
+	"github.com/scottcrooks/mono/internal/cli/output"
 )
 
 const (
@@ -45,6 +47,8 @@ func (c *hostsCommand) Run(args []string) error {
 }
 
 func runHostsSync(args []string) error {
+	p := output.DefaultPrinter()
+
 	config, err := loadConfig()
 	if err != nil {
 		return err
@@ -71,7 +75,7 @@ func runHostsSync(args []string) error {
 		return err
 	}
 	if !changed {
-		fmt.Println("hosts block already up to date")
+		p.Summary("hosts block already up to date")
 		return nil
 	}
 
@@ -79,11 +83,13 @@ func runHostsSync(args []string) error {
 		return err
 	}
 
-	fmt.Printf("updated %s with %d service host entrie(s)\n", hostsFilePath, len(entries))
+	p.Summary(fmt.Sprintf("updated %s with %d service host entrie(s)", hostsFilePath, len(entries)))
 	return nil
 }
 
 func runHostsRemove() error {
+	p := output.DefaultPrinter()
+
 	current, err := os.ReadFile(hostsFilePath)
 	if err != nil {
 		return fmt.Errorf("read %s: %w", hostsFilePath, err)
@@ -94,7 +100,7 @@ func runHostsRemove() error {
 		return err
 	}
 	if !changed {
-		fmt.Println("no managed argus hosts block found")
+		p.Summary("no managed argus hosts block found")
 		return nil
 	}
 
@@ -102,7 +108,7 @@ func runHostsRemove() error {
 		return err
 	}
 
-	fmt.Printf("removed managed argus hosts block from %s\n", hostsFilePath)
+	p.Summary(fmt.Sprintf("removed managed argus hosts block from %s", hostsFilePath))
 	return nil
 }
 
@@ -234,14 +240,15 @@ func writeHostsFile(content string) error {
 }
 
 func printHostsUsage() {
-	fmt.Println("mono hosts - Manage local hosts entries for argus services")
-	fmt.Println()
-	fmt.Println("Usage:")
-	fmt.Println("  mono hosts sync [service...]")
-	fmt.Println("  mono hosts remove")
-	fmt.Println()
-	fmt.Println("Examples:")
-	fmt.Println("  mono hosts sync")
-	fmt.Println("  mono hosts sync mallos daedalus")
-	fmt.Println("  mono hosts remove")
+	p := output.DefaultPrinter()
+	p.Summary("mono hosts - Manage local hosts entries for argus services")
+	p.Blank()
+	p.Summary("Usage:")
+	p.Summary("  mono hosts sync [service...]")
+	p.Summary("  mono hosts remove")
+	p.Blank()
+	p.Summary("Examples:")
+	p.Summary("  mono hosts sync")
+	p.Summary("  mono hosts sync mallos daedalus")
+	p.Summary("  mono hosts remove")
 }

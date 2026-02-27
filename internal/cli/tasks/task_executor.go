@@ -12,10 +12,13 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/scottcrooks/mono/internal/cli/output"
 )
 
 type taskExecutor struct {
-	cache taskCache
+	cache   taskCache
+	printer output.Printer
 }
 
 type readyTask struct {
@@ -24,7 +27,10 @@ type readyTask struct {
 }
 
 func newTaskExecutor() taskExecutor {
-	return taskExecutor{cache: newTaskCache()}
+	return taskExecutor{
+		cache:   newTaskCache(),
+		printer: output.DefaultPrinter(),
+	}
 }
 
 func DefaultTaskConcurrency() int {
@@ -94,7 +100,7 @@ func (e taskExecutor) execute(ctx context.Context, graph *taskGraph, opts TaskRu
 	for node, resolved := range graph.nodes {
 		inDegree[node] = graph.inDegree[node]
 		if resolved.SkipReason != "" {
-			fmt.Printf("[%s] skipped: %s\n", node, resolved.SkipReason)
+			e.printer.StepWarn(node.String(), "skipped: "+resolved.SkipReason)
 			result := TaskRunResult{Node: node, Status: TaskStatusSkipped, SkipReason: resolved.SkipReason}
 			results = append(results, result)
 			resultByNode[node] = result
@@ -181,7 +187,7 @@ func (e taskExecutor) execute(ctx context.Context, graph *taskGraph, opts TaskRu
 		}
 		if failed && !continueOnFailure(ready[0].Node.Task) {
 			for node := range remaining {
-				fmt.Printf("[%s] skipped: blocked by earlier task failure\n", node)
+				e.printer.StepWarn(node.String(), "skipped: blocked by earlier task failure")
 				result := TaskRunResult{Node: node, Status: TaskStatusSkipped, SkipReason: "blocked by earlier task failure"}
 				results = append(results, result)
 				delete(remaining, node)
@@ -232,7 +238,7 @@ func (e taskExecutor) runNode(ctx context.Context, task readyTask, opts TaskRunO
 	node := task.resolved.Node
 	if !taskUsesCache(node.Task) {
 		cmdString := commandForExecution(task.resolved.Service, node, task.resolved.Command, opts)
-		if err := runTaskCommand(ctx, task.resolved.Service, node, cmdString); err != nil {
+		if err := runTaskCommand(ctx, e.printer, task.resolved.Service, node, cmdString); err != nil {
 			return TaskRunResult{Node: node, Status: TaskStatusFailed, Err: err}
 		}
 		return TaskRunResult{Node: node, Status: TaskStatusSucceeded}
@@ -244,15 +250,15 @@ func (e taskExecutor) runNode(ctx context.Context, task readyTask, opts TaskRunO
 		return TaskRunResult{Node: node, Status: TaskStatusFailed, Err: err}
 	}
 	if !opts.NoCache && hit && entry.Key != "" {
-		fmt.Printf("[%s] skipped (cached)\n", node)
+		e.printer.Summary(fmt.Sprintf("[cached] [%s] skipped", node.String()))
 		return TaskRunResult{Node: node, Status: TaskStatusSkipped, SkipReason: "cached", Cached: true}
 	}
 	if reason := cacheMissReason(opts.NoCache, hit); reason != "" {
-		fmt.Printf("[%s] cache miss: %s\n", node, reason)
+		e.printer.StepWarn(node.String(), "cache miss: "+reason)
 	}
 
 	cmdString := commandForExecution(task.resolved.Service, node, task.resolved.Command, opts)
-	if err := runTaskCommand(ctx, task.resolved.Service, node, cmdString); err != nil {
+	if err := runTaskCommand(ctx, e.printer, task.resolved.Service, node, cmdString); err != nil {
 		return TaskRunResult{Node: node, Status: TaskStatusFailed, Err: err}
 	}
 
@@ -307,8 +313,8 @@ func composeExecutionCacheKey(baseKey string, dependencyKeys []string) string {
 	return hex.EncodeToString(h.Sum(nil))
 }
 
-func runTaskCommand(ctx context.Context, svc Service, node TaskNode, cmdString string) error {
-	fmt.Printf("==> [%s] start\n", node)
+func runTaskCommand(ctx context.Context, printer output.Printer, svc Service, node TaskNode, cmdString string) error {
+	printer.StepStart(node.String(), "start")
 	absPath, err := filepath.Abs(svc.Path)
 	if err != nil {
 		return err
@@ -320,14 +326,14 @@ func runTaskCommand(ctx context.Context, svc Service, node TaskNode, cmdString s
 		return fmt.Errorf("[%s] %w", node, err)
 	}
 	cmd.Dir = absPath
-	cmd.Stdout = &PrefixWriter{prefix: fmt.Sprintf("[%s]", node), writer: os.Stdout}
-	cmd.Stderr = &PrefixWriter{prefix: fmt.Sprintf("[%s]", node), writer: os.Stderr}
+	cmd.Stdout = output.NewPrefixWriter(fmt.Sprintf("[%s]", node), os.Stdout)
+	cmd.Stderr = output.NewPrefixWriter(fmt.Sprintf("[%s]", node), os.Stderr)
 	cmd.Stdin = os.Stdin
 
 	if err := cmd.Run(); err != nil {
-		fmt.Fprintf(os.Stderr, "✗ [%s] failed\n", node)
+		printer.StepErr(node.String(), "failed")
 		return err
 	}
-	fmt.Printf("✓ [%s] completed\n", node)
+	printer.StepOK(node.String(), "completed")
 	return nil
 }

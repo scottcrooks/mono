@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/scottcrooks/mono/internal/cli/output"
 )
 
 type metadataCommand struct{}
@@ -30,7 +32,13 @@ type metadataInfo struct {
 
 func (c *metadataCommand) Run(_ []string) error {
 	info := collectMetadata()
-	fmt.Print(formatMetadataOutput(info))
+	p := output.DefaultPrinter()
+	for _, line := range strings.Split(strings.TrimSuffix(formatMetadataOutput(info), "\n"), "\n") {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		p.Summary(line)
+	}
 	return nil
 }
 
