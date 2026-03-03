@@ -107,15 +107,16 @@ type manifest struct {
 }
 
 type manifestService struct {
-	Name      string          `yaml:"name"`
-	Path      string          `yaml:"path"`
-	Kind      string          `yaml:"kind"`
-	Type      string          `yaml:"type"`
-	Archetype string          `yaml:"archetype"`
-	Runtime   string          `yaml:"runtime"`
-	Owner     string          `yaml:"owner"`
-	Depends   []string        `yaml:"depends"`
-	Deploy    *manifestDeploy `yaml:"deploy"`
+	Name       string          `yaml:"name"`
+	Path       string          `yaml:"path"`
+	Kind       string          `yaml:"kind"`
+	Type       string          `yaml:"type"`
+	Archetype  string          `yaml:"archetype"`
+	Runtime    string          `yaml:"runtime"`
+	Owner      string          `yaml:"owner"`
+	Depends    []string        `yaml:"depends"`
+	DevDepends []string        `yaml:"devDepends"`
+	Deploy     *manifestDeploy `yaml:"deploy"`
 }
 
 type manifestLocal struct {

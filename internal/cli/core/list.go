@@ -21,6 +21,9 @@ func ListServices(config *Config, availableTasks func(Service) []string) {
 		if len(svc.Depends) > 0 {
 			p.Summary(fmt.Sprintf("    Depends: %s", strings.Join(svc.Depends, ", ")))
 		}
+		if len(svc.DevDepends) > 0 {
+			p.Summary(fmt.Sprintf("    DevDepends: %s", strings.Join(svc.DevDepends, ", ")))
+		}
 
 		cmds := make([]string, 0, len(svc.Commands)+8)
 		for _, task := range availableTasks(svc) {

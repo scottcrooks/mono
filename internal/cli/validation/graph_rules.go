@@ -29,6 +29,10 @@ func validateGraphRules(services []manifestService, local *manifestLocal, info m
 		if from == "" {
 			continue
 		}
+		validateServiceDependencies(i, svc, "depends", svc.Depends, serviceNames, infraNames, info, report)
+		validateServiceDependencies(i, svc, "devDepends", svc.DevDepends, serviceNames, infraNames, info, report)
+
+		// Task/check dependency cycle policy remains tied to "depends".
 		for _, dep := range svc.Depends {
 			dep = strings.TrimSpace(dep)
 			if dep == "" {
@@ -36,25 +40,7 @@ func validateGraphRules(services []manifestService, local *manifestLocal, info m
 			}
 			if _, ok := serviceNames[dep]; ok {
 				edges[from] = append(edges[from], dep)
-				continue
 			}
-			if _, ok := infraNames[dep]; ok {
-				continue
-			}
-
-			p := position{}
-			if sInfo, ok := info[i]; ok {
-				p = requiredFieldPos(sInfo, "depends")
-			}
-			report.add(Diagnostic{
-				Severity: SeverityError,
-				Code:     "graph.unknown_dependency",
-				Path:     fmt.Sprintf("services[%d].depends", i),
-				Message:  fmt.Sprintf("unknown dependency %q (must reference a service or local resource)", dep),
-				Service:  serviceLabel(i, svc),
-				Line:     p.line,
-				Column:   p.column,
-			})
 		}
 	}
 
@@ -70,6 +56,44 @@ func validateGraphRules(services []manifestService, local *manifestLocal, info m
 			Path:     fmt.Sprintf("services[%d].depends", ownerIdx),
 			Message:  fmt.Sprintf("dependency cycle detected: %s", strings.Join(cycle, " -> ")),
 			Service:  serviceLabel(ownerIdx, services[ownerIdx]),
+			Line:     p.line,
+			Column:   p.column,
+		})
+	}
+}
+
+func validateServiceDependencies(
+	serviceIndex int,
+	svc manifestService,
+	fieldName string,
+	deps []string,
+	serviceNames map[string]int,
+	infraNames map[string]struct{},
+	info map[int]serviceNodeInfo,
+	report *Report,
+) {
+	for _, dep := range deps {
+		dep = strings.TrimSpace(dep)
+		if dep == "" {
+			continue
+		}
+		if _, ok := serviceNames[dep]; ok {
+			continue
+		}
+		if _, ok := infraNames[dep]; ok {
+			continue
+		}
+
+		p := position{}
+		if sInfo, ok := info[serviceIndex]; ok {
+			p = requiredFieldPos(sInfo, fieldName)
+		}
+		report.add(Diagnostic{
+			Severity: SeverityError,
+			Code:     "graph.unknown_dependency",
+			Path:     fmt.Sprintf("services[%d].%s", serviceIndex, fieldName),
+			Message:  fmt.Sprintf("unknown dependency %q (must reference a service or local resource)", dep),
+			Service:  serviceLabel(serviceIndex, svc),
 			Line:     p.line,
 			Column:   p.column,
 		})

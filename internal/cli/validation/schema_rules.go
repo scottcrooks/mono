@@ -22,6 +22,7 @@ var allowedServiceKeys = map[string]struct{}{
 	"runtime":     {},
 	"owner":       {},
 	"depends":     {},
+	"devDepends":  {},
 	"dev":         {},
 	"commands":    {},
 	"deploy":      {},

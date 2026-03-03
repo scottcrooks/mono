@@ -2,6 +2,7 @@ package output
 
 import (
 	"fmt"
+	"hash/fnv"
 	"io"
 	"sync"
 )
@@ -16,6 +17,11 @@ type PrefixWriter struct {
 
 func NewPrefixWriter(prefix string, writer io.Writer) *PrefixWriter {
 	return &PrefixWriter{prefix: prefix, writer: writer}
+}
+
+func NewServicePrefixWriter(serviceName string, writer io.Writer, mode Mode) *PrefixWriter {
+	prefix := fmt.Sprintf("[%s]", serviceName)
+	return NewPrefixWriter(colorizeServicePrefix(prefix, serviceName, mode), writer)
 }
 
 func (pw *PrefixWriter) Write(p []byte) (n int, err error) {
@@ -55,4 +61,25 @@ func (pw *PrefixWriter) Flush() error {
 	}
 	pw.buffer = nil
 	return nil
+}
+
+func colorizeServicePrefix(prefix, serviceName string, mode Mode) string {
+	if mode != ModeInteractive {
+		return prefix
+	}
+
+	// Curated non-red/non-green accents so these don't clash with status colors.
+	palette := []string{
+		"\x1b[38;5;39m",  // blue
+		"\x1b[38;5;45m",  // cyan
+		"\x1b[38;5;141m", // lavender
+		"\x1b[38;5;214m", // amber
+		"\x1b[38;5;118m", // lime
+		"\x1b[38;5;205m", // pink
+	}
+
+	h := fnv.New32a()
+	_, _ = h.Write([]byte(serviceName))
+	color := palette[h.Sum32()%uint32(len(palette))]
+	return color + prefix + ansiReset
 }

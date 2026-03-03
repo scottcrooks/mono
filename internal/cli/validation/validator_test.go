@@ -40,6 +40,7 @@ func TestValidateServicesManifestValid(t *testing.T) {
         limits: {cpu: 500m, memory: 512Mi}
   - name: mallos
     path: apps/mallos
+    devDepends: [pythia]
     kind: service
     archetype: react
     owner: frontend
@@ -177,6 +178,7 @@ func TestValidateServicesManifestGraphRules(t *testing.T) {
     archetype: go
     owner: team-a
     depends: [b]
+    devDepends: [missing-dev]
     deploy:
       containerPort: 8081
       probes:
@@ -212,6 +214,45 @@ func TestValidateServicesManifestGraphRules(t *testing.T) {
 	}
 	if !containsCode(report, "graph.cycle") {
 		t.Fatalf("expected graph.cycle diagnostic, got %+v", report.Diagnostics)
+	}
+}
+
+func TestValidateServicesManifestDevDependsPathInDiagnostics(t *testing.T) {
+	repo := t.TempDir()
+	mustMkdirAll(t, filepath.Join(repo, "apps", "a"))
+	manifest := `services:
+  - name: a
+    path: apps/a
+    kind: service
+    archetype: go
+    owner: team-a
+    devDepends: [missing]
+    deploy:
+      containerPort: 8081
+      probes:
+        readiness: {path: /ready, port: 8081}
+        liveness: {path: /health, port: 8081}
+      resources:
+        requests: {cpu: 100m}
+        limits: {cpu: 200m}
+`
+	manifestPath := filepath.Join(repo, "services.yaml")
+	mustWrite(t, manifestPath, manifest)
+
+	report, err := ValidateServicesManifest(manifestPath)
+	if err != nil {
+		t.Fatalf("ValidateServicesManifest returned error: %v", err)
+	}
+
+	found := false
+	for _, d := range report.Diagnostics {
+		if d.Code == "graph.unknown_dependency" && d.Path == "services[0].devDepends" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected graph.unknown_dependency diagnostic on services[0].devDepends, got %+v", report.Diagnostics)
 	}
 }
 

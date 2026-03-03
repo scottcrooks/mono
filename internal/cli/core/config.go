@@ -24,6 +24,7 @@ type Service struct {
 	Runtime     string            `yaml:"runtime"`
 	Owner       string            `yaml:"owner"`
 	Depends     []string          `yaml:"depends"`
+	DevDepends  []string          `yaml:"devDepends"`
 	Dev         string            `yaml:"dev"`
 	Commands    map[string]string `yaml:"commands"`
 	Deploy      *DeploySpec       `yaml:"deploy"`

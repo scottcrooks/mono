@@ -472,7 +472,18 @@ func isProcessRunning(pid int) bool {
 
 // checkPodStatus returns the status of pods matching the selector
 func checkPodStatus(namespace, selector string) string {
-	cmd := exec.Command("kubectl", "get", "pods", "-n", namespace, "-l", selector, "-o", "jsonpath={.items[*].status.phase}")
+	cmd := exec.Command(
+		"kubectl",
+		"--request-timeout="+kubeAPICheckTimeout,
+		"get",
+		"pods",
+		"-n",
+		namespace,
+		"-l",
+		selector,
+		"-o",
+		"jsonpath={.items[*].status.phase}",
+	)
 	output, err := cmd.Output()
 	if err != nil {
 		return "Error"
