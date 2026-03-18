@@ -13,6 +13,7 @@ import (
 
 	"github.com/scottcrooks/mono/internal/cli/core"
 	"github.com/scottcrooks/mono/internal/cli/output"
+	"github.com/scottcrooks/mono/internal/cli/tasks"
 	"github.com/scottcrooks/mono/internal/cli/validation"
 )
 
@@ -563,20 +564,36 @@ func ensureFileWithContents(path, content string) (bool, error) {
 }
 
 func installServiceDependencies(cfg *core.Config) ([]string, error) {
-	installed := make([]string, 0)
+	serviceNames := make([]string, 0, len(cfg.Services))
 	for _, svc := range cfg.Services {
-		if svc.Archetype != "react" || strings.TrimSpace(svc.Path) == "" {
-			continue
-		}
-		if !fileExists(filepath.Join(svc.Path, "package.json")) {
-			continue
-		}
-		if err := runServicePNPMInstall(svc.Path, false); err != nil {
-			return nil, fmt.Errorf("%s: %w", svc.Name, err)
-		}
-		installed = append(installed, svc.Name)
+		serviceNames = append(serviceNames, svc.Name)
 	}
-	return installed, nil
+
+	targets, err := tasks.DependencyInstallTargetsForServices(cfg, serviceNames)
+	if err != nil {
+		return nil, err
+	}
+
+	installed := make(map[string]struct{})
+	for _, target := range targets {
+		if target.Archetype == "react" {
+			if err := runServicePNPMInstall(target.Dir, false); err != nil {
+				return nil, err
+			}
+		} else if err := runDependencyInstallTarget(target); err != nil {
+			return nil, err
+		}
+		for _, svc := range target.Services {
+			installed[svc] = struct{}{}
+		}
+	}
+
+	names := make([]string, 0, len(installed))
+	for name := range installed {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names, nil
 }
 
 func installPNPMDependencies(dir string, frozen bool) error {
@@ -590,6 +607,18 @@ func installPNPMDependencies(dir string, frozen bool) error {
 	cmd.Stderr = os.Stderr
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("pnpm %s in %s: %w", strings.Join(args, " "), dir, err)
+	}
+	return nil
+}
+
+func runDependencyInstallTarget(target tasks.DependencyInstallTarget) error {
+	parts := strings.Fields(target.Command)
+	cmd := exec.Command(parts[0], parts[1:]...)
+	cmd.Dir = target.Dir
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("%s in %s: %w", target.Command, target.Dir, err)
 	}
 	return nil
 }

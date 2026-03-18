@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -322,7 +323,7 @@ func TestEnsureReactServiceDefaultsNoopWhenAlreadyConfigured(t *testing.T) {
 	}
 }
 
-func TestInstallServiceDependenciesInstallsReactServicesOnly(t *testing.T) {
+func TestInstallServiceDependenciesInstallsSupportedArchetypeDependencies(t *testing.T) {
 	repo := t.TempDir()
 	mustMkdirAll(t, filepath.Join(repo, "apps", "web"))
 	mustWrite(t, filepath.Join(repo, "apps", "web", "package.json"), `{"name":"web"}`)
@@ -365,7 +366,7 @@ func TestInstallServiceDependenciesInstallsReactServicesOnly(t *testing.T) {
 	if err != nil {
 		t.Fatalf("installServiceDependencies returned error: %v", err)
 	}
-	if len(installed) != 1 || installed[0] != "web" {
+	if !reflect.DeepEqual(installed, []string{"api", "web"}) {
 		t.Fatalf("unexpected installed services: %v", installed)
 	}
 	if len(calls) != 1 || calls[0] != "apps/web" {

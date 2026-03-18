@@ -50,14 +50,16 @@ func TestCheckCommandExecutesPhasesInOrder(t *testing.T) {
 	withWorkingDir(t, repo)
 
 	type phaseCall struct {
+		kind     string
 		task     TaskName
 		services []string
 	}
-	calls := make([]phaseCall, 0, 3)
+	calls := make([]phaseCall, 0, 4)
 
 	original := runCheckTaskPhase
 	runCheckTaskPhase = func(_ *Config, req TaskRequest, _ TaskRunOptions) ([]TaskRunResult, error) {
 		calls = append(calls, phaseCall{
+			kind:     "task",
 			task:     req.Task,
 			services: append([]string(nil), req.Services...),
 		})
@@ -67,17 +69,30 @@ func TestCheckCommandExecutesPhasesInOrder(t *testing.T) {
 		runCheckTaskPhase = original
 	})
 
+	originalInstalls := runCheckDependencyInstalls
+	runCheckDependencyInstalls = func(_ *Config, services []string) ([]DependencyInstallResult, error) {
+		calls = append(calls, phaseCall{
+			kind:     "deps",
+			services: append([]string(nil), services...),
+		})
+		return nil, nil
+	}
+	t.Cleanup(func() {
+		runCheckDependencyInstalls = originalInstalls
+	})
+
 	if err := (&checkCLICommand{}).Run([]string{"mono", "check", "--base", "main", "--concurrency", "1", "--no-cache"}); err != nil {
 		t.Fatalf("check command returned error: %v", err)
 	}
 
-	if len(calls) != 3 {
-		t.Fatalf("expected 3 phases, got %d", len(calls))
+	if len(calls) != 4 {
+		t.Fatalf("expected 4 phases, got %d", len(calls))
 	}
 	want := []phaseCall{
-		{task: TaskLint, services: []string{"api", "lib"}},
-		{task: TaskTypecheck, services: []string{"api"}},
-		{task: TaskTest, services: []string{"api", "lib"}},
+		{kind: "deps", services: []string{"api", "lib"}},
+		{kind: "task", task: TaskLint, services: []string{"api", "lib"}},
+		{kind: "task", task: TaskTypecheck, services: []string{"api"}},
+		{kind: "task", task: TaskTest, services: []string{"api", "lib"}},
 	}
 	if !reflect.DeepEqual(calls, want) {
 		t.Fatalf("unexpected phase calls: got %+v want %+v", calls, want)

@@ -11,6 +11,7 @@ import (
 type checkCLICommand struct{}
 
 var runCheckTaskPhase = runOrchestratedTaskRequestWithConfig
+var runCheckDependencyInstalls = runDependencyInstallsWithConfig
 
 func init() {
 	registerCommand("check", &checkCLICommand{})
@@ -37,6 +38,15 @@ func (c *checkCLICommand) Run(args []string) error {
 	if len(report.Impacted) == 0 {
 		printer.Summary("No impacted services. Nothing to check.")
 		return nil
+	}
+
+	installResults, err := runCheckDependencyInstalls(cfg, report.Impacted)
+	if err != nil {
+		printDependencyInstallSummary(installResults)
+		return fmt.Errorf("check dependency installs failed: %w", err)
+	}
+	if len(installResults) > 0 {
+		printDependencyInstallSummary(installResults)
 	}
 
 	plan := buildPendingCheckPlan(cfg, report.Impacted)

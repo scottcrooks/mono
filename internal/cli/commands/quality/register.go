@@ -24,11 +24,12 @@ func Register(reg *core.Registry) {
 }
 
 type (
-	Config         = core.Config
-	TaskName       = tasks.TaskName
-	TaskRequest    = tasks.TaskRequest
-	TaskRunOptions = tasks.TaskRunOptions
-	TaskRunResult  = tasks.TaskRunResult
+	Config                  = core.Config
+	TaskName                = tasks.TaskName
+	TaskRequest             = tasks.TaskRequest
+	TaskRunOptions          = tasks.TaskRunOptions
+	TaskRunResult           = tasks.TaskRunResult
+	DependencyInstallResult = tasks.DependencyInstallResult
 )
 
 const (
@@ -44,6 +45,14 @@ func runOrchestratedTaskRequestWithConfig(cfg *core.Config, req TaskRequest, opt
 }
 
 func printTaskSummary(results []TaskRunResult) { tasks.PrintTaskSummary(results) }
+
+func runDependencyInstallsWithConfig(cfg *core.Config, services []string) ([]DependencyInstallResult, error) {
+	return tasks.RunDependencyInstallsWithConfig(cfg, services)
+}
+
+func printDependencyInstallSummary(results []DependencyInstallResult) {
+	tasks.PrintDependencyInstallSummary(results)
+}
 
 func loadConfig() (*core.Config, error) { return core.LoadConfig() }
 
