@@ -2,6 +2,7 @@ package workflow
 
 import (
 	"bytes"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -158,6 +159,252 @@ func TestToolBinaryName(t *testing.T) {
 		if got := toolBinaryName(tt.in); got != tt.want {
 			t.Fatalf("toolBinaryName(%q) = %q, want %q", tt.in, got, tt.want)
 		}
+	}
+}
+
+func TestEnsureReactServiceDefaultsAddsMissingScripts(t *testing.T) {
+	repo := t.TempDir()
+	svcPath := filepath.Join(repo, "apps", "web")
+	mustMkdirAll(t, svcPath)
+	mustWrite(t, filepath.Join(svcPath, "package.json"), `{
+  "name": "web",
+  "private": true,
+  "scripts": {
+    "build": "tsc -b && vite build"
+  }
+}
+`)
+
+	prev, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	t.Cleanup(func() {
+		if chdirErr := os.Chdir(prev); chdirErr != nil {
+			t.Fatalf("restore working dir: %v", chdirErr)
+		}
+	})
+	if err := os.Chdir(repo); err != nil {
+		t.Fatalf("chdir repo: %v", err)
+	}
+
+	changed, err := ensureReactServiceDefaults(core.Service{
+		Name:      "web",
+		Path:      "apps/web",
+		Archetype: "react",
+	})
+	if err != nil {
+		t.Fatalf("ensureReactServiceDefaults returned error: %v", err)
+	}
+	if !changed {
+		t.Fatal("expected package.json to be updated")
+	}
+
+	pkg := readPackageJSON(t, filepath.Join(svcPath, "package.json"))
+	scripts := pkg["scripts"].(map[string]any)
+	assertScript(t, scripts, "build", "tsc -b && vite build")
+	assertScript(t, scripts, "lint", "eslint .")
+	assertScript(t, scripts, "typecheck", "tsc -b")
+	assertScript(t, scripts, "test", "vitest run --passWithNoTests")
+	assertScript(t, scripts, "audit", "pnpm audit --prod")
+	assertScript(t, pkg["devDependencies"].(map[string]any), "eslint", "^9.18.0")
+	assertScript(t, pkg["devDependencies"].(map[string]any), "vitest", "^3.0.0")
+	assertFileContains(t, filepath.Join(svcPath, "eslint.config.js"), `import js from "@eslint/js";`)
+	assertFileContains(t, filepath.Join(svcPath, "vitest.config.ts"), `passWithNoTests: true`)
+}
+
+func TestEnsureReactServiceDefaultsPreservesExistingScripts(t *testing.T) {
+	repo := t.TempDir()
+	svcPath := filepath.Join(repo, "apps", "web")
+	mustMkdirAll(t, svcPath)
+	mustWrite(t, filepath.Join(svcPath, "package.json"), `{
+  "name": "web",
+  "private": true,
+  "scripts": {
+    "lint": "biome check .",
+    "test": "custom-test"
+  }
+}
+`)
+
+	prev, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	t.Cleanup(func() {
+		if chdirErr := os.Chdir(prev); chdirErr != nil {
+			t.Fatalf("restore working dir: %v", chdirErr)
+		}
+	})
+	if err := os.Chdir(repo); err != nil {
+		t.Fatalf("chdir repo: %v", err)
+	}
+
+	changed, err := ensureReactServiceDefaults(core.Service{
+		Name:      "web",
+		Path:      "apps/web",
+		Archetype: "react",
+	})
+	if err != nil {
+		t.Fatalf("ensureReactServiceDefaults returned error: %v", err)
+	}
+	if !changed {
+		t.Fatal("expected package.json to be updated")
+	}
+
+	pkg := readPackageJSON(t, filepath.Join(svcPath, "package.json"))
+	scripts := pkg["scripts"].(map[string]any)
+	assertScript(t, scripts, "lint", "biome check .")
+	assertScript(t, scripts, "test", "custom-test")
+	assertScript(t, scripts, "typecheck", "tsc -b")
+}
+
+func TestEnsureReactServiceDefaultsNoopWhenAlreadyConfigured(t *testing.T) {
+	repo := t.TempDir()
+	svcPath := filepath.Join(repo, "apps", "web")
+	mustMkdirAll(t, svcPath)
+	original := `{
+  "name": "web",
+  "private": true,
+  "scripts": {
+    "lint": "eslint .",
+    "typecheck": "tsc -b",
+    "test": "vitest run --passWithNoTests",
+    "audit": "pnpm audit --prod"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.18.0",
+    "eslint": "^9.18.0",
+    "eslint-plugin-react-hooks": "^5.1.0",
+    "eslint-plugin-react-refresh": "^0.4.18",
+    "globals": "^15.14.0",
+    "jsdom": "^25.0.0",
+    "typescript-eslint": "^8.20.0",
+    "vitest": "^3.0.0"
+  }
+}
+`
+	pkgPath := filepath.Join(svcPath, "package.json")
+	mustWrite(t, pkgPath, original)
+	mustWrite(t, filepath.Join(svcPath, "eslint.config.js"), reactEslintConfigTemplate)
+	mustWrite(t, filepath.Join(svcPath, "vitest.config.ts"), reactVitestConfigTemplate)
+
+	prev, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	t.Cleanup(func() {
+		if chdirErr := os.Chdir(prev); chdirErr != nil {
+			t.Fatalf("restore working dir: %v", chdirErr)
+		}
+	})
+	if err := os.Chdir(repo); err != nil {
+		t.Fatalf("chdir repo: %v", err)
+	}
+
+	changed, err := ensureReactServiceDefaults(core.Service{
+		Name:      "web",
+		Path:      "apps/web",
+		Archetype: "react",
+	})
+	if err != nil {
+		t.Fatalf("ensureReactServiceDefaults returned error: %v", err)
+	}
+	if changed {
+		t.Fatal("expected package.json to remain unchanged")
+	}
+	got, err := os.ReadFile(pkgPath)
+	if err != nil {
+		t.Fatalf("read package.json: %v", err)
+	}
+	if string(got) != original {
+		t.Fatalf("package.json changed unexpectedly: %q", string(got))
+	}
+}
+
+func TestInstallServiceDependenciesInstallsReactServicesOnly(t *testing.T) {
+	repo := t.TempDir()
+	mustMkdirAll(t, filepath.Join(repo, "apps", "web"))
+	mustWrite(t, filepath.Join(repo, "apps", "web", "package.json"), `{"name":"web"}`)
+	mustMkdirAll(t, filepath.Join(repo, "apps", "api"))
+	mustWrite(t, filepath.Join(repo, "apps", "api", "go.mod"), "module api\n")
+
+	prev, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	t.Cleanup(func() {
+		if chdirErr := os.Chdir(prev); chdirErr != nil {
+			t.Fatalf("restore working dir: %v", chdirErr)
+		}
+	})
+	if err := os.Chdir(repo); err != nil {
+		t.Fatalf("chdir repo: %v", err)
+	}
+
+	calls := make([]string, 0)
+	orig := runServicePNPMInstall
+	runServicePNPMInstall = func(dir string, frozen bool) error {
+		calls = append(calls, dir)
+		if frozen {
+			t.Fatal("expected non-frozen install for service dependencies")
+		}
+		return nil
+	}
+	t.Cleanup(func() {
+		runServicePNPMInstall = orig
+	})
+
+	installed, err := installServiceDependencies(&core.Config{
+		Services: []core.Service{
+			{Name: "web", Path: "apps/web", Archetype: "react"},
+			{Name: "api", Path: "apps/api", Archetype: "go"},
+			{Name: "missing", Path: "apps/missing", Archetype: "react"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("installServiceDependencies returned error: %v", err)
+	}
+	if len(installed) != 1 || installed[0] != "web" {
+		t.Fatalf("unexpected installed services: %v", installed)
+	}
+	if len(calls) != 1 || calls[0] != "apps/web" {
+		t.Fatalf("unexpected pnpm install calls: %v", calls)
+	}
+}
+
+func readPackageJSON(t *testing.T, path string) map[string]any {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+	var pkg map[string]any
+	if err := json.Unmarshal(data, &pkg); err != nil {
+		t.Fatalf("parse %s: %v", path, err)
+	}
+	return pkg
+}
+
+func assertScript(t *testing.T, scripts map[string]any, name, want string) {
+	t.Helper()
+	got, ok := scripts[name].(string)
+	if !ok {
+		t.Fatalf("script %q missing or not a string", name)
+	}
+	if got != want {
+		t.Fatalf("script %q = %q, want %q", name, got, want)
+	}
+}
+
+func assertFileContains(t *testing.T, path, want string) {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+	if !strings.Contains(string(data), want) {
+		t.Fatalf("expected %s to contain %q, got %q", path, want, string(data))
 	}
 }
 

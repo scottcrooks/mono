@@ -2,11 +2,13 @@ package workflow
 
 import (
 	"bufio"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/scottcrooks/mono/internal/cli/core"
@@ -15,6 +17,8 @@ import (
 )
 
 type doctorCommand struct{}
+
+var runServicePNPMInstall = installPNPMDependencies
 
 func init() {
 	registerCommand("doctor", &doctorCommand{})
@@ -158,8 +162,44 @@ func (c *doctorCommand) Run(_ []string) error {
 	if !fileExists("services.yaml") {
 		p.StepWarn("doctor", "services.yaml not found; skipping service verification")
 	} else {
+		cfg, err := core.LoadConfig()
+		if err != nil {
+			return err
+		}
 		if err := listServices(); err != nil {
 			return err
+		}
+		p.Blank()
+		p.StepStart("doctor", "Ensuring service task defaults...")
+		updated, err := ensureServiceTaskDefaults(cfg)
+		if err != nil {
+			p.StepErr("doctor", fmt.Sprintf("Failed to ensure service task defaults: %v", err))
+			return err
+		}
+		if len(updated) == 0 {
+			p.StepOK("doctor", "Service task defaults are configured")
+		} else {
+			sort.Strings(updated)
+			for _, svc := range updated {
+				p.Summary(fmt.Sprintf("  Updated React scripts for %s", svc))
+			}
+			p.StepOK("doctor", fmt.Sprintf("Configured service task defaults for %d service(s)", len(updated)))
+		}
+		p.Blank()
+		p.StepStart("doctor", "Installing service dependencies...")
+		installed, err := installServiceDependencies(cfg)
+		if err != nil {
+			p.StepErr("doctor", fmt.Sprintf("Failed to install service dependencies: %v", err))
+			return err
+		}
+		if len(installed) == 0 {
+			p.StepOK("doctor", "Service dependencies are installed")
+		} else {
+			sort.Strings(installed)
+			for _, svc := range installed {
+				p.Summary(fmt.Sprintf("  Installed pnpm dependencies for %s", svc))
+			}
+			p.StepOK("doctor", fmt.Sprintf("Installed service dependencies for %d service(s)", len(installed)))
 		}
 		p.Blank()
 		if err := validateManifestForDoctor("services.yaml", os.Stdout); err != nil {
@@ -390,6 +430,229 @@ func fileExists(path string) bool {
 	_, err := os.Stat(path)
 	return err == nil
 }
+
+func ensureServiceTaskDefaults(cfg *core.Config) ([]string, error) {
+	updated := make([]string, 0)
+	for _, svc := range cfg.Services {
+		if svc.Archetype != "react" || strings.TrimSpace(svc.Path) == "" {
+			continue
+		}
+
+		changed, err := ensureReactServiceDefaults(svc)
+		if err != nil {
+			return nil, fmt.Errorf("%s: %w", svc.Name, err)
+		}
+		if changed {
+			updated = append(updated, svc.Name)
+		}
+	}
+	return updated, nil
+}
+
+func ensureReactServiceDefaults(svc core.Service) (bool, error) {
+	pkgPath := filepath.Join(svc.Path, "package.json")
+	data, err := os.ReadFile(pkgPath)
+	if err != nil {
+		return false, fmt.Errorf("read %s: %w", pkgPath, err)
+	}
+
+	var pkg map[string]any
+	if err := json.Unmarshal(data, &pkg); err != nil {
+		return false, fmt.Errorf("parse %s: %w", pkgPath, err)
+	}
+
+	scripts := jsonObjectMap(pkg["scripts"])
+	if scripts == nil {
+		scripts = map[string]any{}
+	}
+	devDependencies := jsonObjectMap(pkg["devDependencies"])
+	if devDependencies == nil {
+		devDependencies = map[string]any{}
+	}
+
+	changed := false
+	for name, cmd := range defaultReactScripts() {
+		if strings.TrimSpace(stringValue(scripts[name])) != "" {
+			continue
+		}
+		scripts[name] = cmd
+		changed = true
+	}
+	for name, version := range defaultReactDevDependencies() {
+		if strings.TrimSpace(stringValue(devDependencies[name])) != "" {
+			continue
+		}
+		devDependencies[name] = version
+		changed = true
+	}
+	created, err := ensureReactConfigFiles(svc)
+	if err != nil {
+		return false, err
+	}
+	if created {
+		changed = true
+	}
+	if !changed {
+		return false, nil
+	}
+
+	pkg["scripts"] = scripts
+	pkg["devDependencies"] = devDependencies
+	formatted, err := json.MarshalIndent(pkg, "", "  ")
+	if err != nil {
+		return false, fmt.Errorf("marshal %s: %w", pkgPath, err)
+	}
+	formatted = append(formatted, '\n')
+	if err := os.WriteFile(pkgPath, formatted, 0o644); err != nil {
+		return false, fmt.Errorf("write %s: %w", pkgPath, err)
+	}
+	return true, nil
+}
+
+func defaultReactScripts() map[string]string {
+	return map[string]string{
+		"audit":     "pnpm audit --prod",
+		"lint":      "eslint .",
+		"test":      "vitest run --passWithNoTests",
+		"typecheck": "tsc -b",
+	}
+}
+
+func defaultReactDevDependencies() map[string]string {
+	return map[string]string{
+		"@eslint/js":                  "^9.18.0",
+		"eslint":                      "^9.18.0",
+		"eslint-plugin-react-hooks":   "^5.1.0",
+		"eslint-plugin-react-refresh": "^0.4.18",
+		"globals":                     "^15.14.0",
+		"jsdom":                       "^25.0.0",
+		"typescript-eslint":           "^8.20.0",
+		"vitest":                      "^3.0.0",
+	}
+}
+
+func ensureReactConfigFiles(svc core.Service) (bool, error) {
+	files := map[string]string{
+		filepath.Join(svc.Path, "eslint.config.js"): reactEslintConfigTemplate,
+		filepath.Join(svc.Path, "vitest.config.ts"): reactVitestConfigTemplate,
+	}
+	createdAny := false
+	for path, content := range files {
+		created, err := ensureFileWithContents(path, content)
+		if err != nil {
+			return false, err
+		}
+		if created {
+			createdAny = true
+		}
+	}
+	return createdAny, nil
+}
+
+func ensureFileWithContents(path, content string) (bool, error) {
+	if fileExists(path) {
+		return false, nil
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return false, fmt.Errorf("mkdir %s: %w", filepath.Dir(path), err)
+	}
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		return false, fmt.Errorf("write %s: %w", path, err)
+	}
+	return true, nil
+}
+
+func installServiceDependencies(cfg *core.Config) ([]string, error) {
+	installed := make([]string, 0)
+	for _, svc := range cfg.Services {
+		if svc.Archetype != "react" || strings.TrimSpace(svc.Path) == "" {
+			continue
+		}
+		if !fileExists(filepath.Join(svc.Path, "package.json")) {
+			continue
+		}
+		if err := runServicePNPMInstall(svc.Path, false); err != nil {
+			return nil, fmt.Errorf("%s: %w", svc.Name, err)
+		}
+		installed = append(installed, svc.Name)
+	}
+	return installed, nil
+}
+
+func installPNPMDependencies(dir string, frozen bool) error {
+	args := []string{"install"}
+	if frozen {
+		args = append(args, "--frozen-lockfile")
+	}
+	cmd := exec.Command("pnpm", args...)
+	cmd.Dir = dir
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("pnpm %s in %s: %w", strings.Join(args, " "), dir, err)
+	}
+	return nil
+}
+
+func jsonObjectMap(v any) map[string]any {
+	if v == nil {
+		return nil
+	}
+	obj, ok := v.(map[string]any)
+	if !ok {
+		return nil
+	}
+	return obj
+}
+
+func stringValue(v any) string {
+	s, _ := v.(string)
+	return s
+}
+
+const reactEslintConfigTemplate = `import js from "@eslint/js";
+import globals from "globals";
+import reactHooks from "eslint-plugin-react-hooks";
+import reactRefresh from "eslint-plugin-react-refresh";
+import tseslint from "typescript-eslint";
+
+export default tseslint.config(
+  { ignores: ["dist", "coverage"] },
+  {
+    extends: [js.configs.recommended, ...tseslint.configs.recommended],
+    files: ["**/*.{ts,tsx}"],
+    languageOptions: {
+      ecmaVersion: 2020,
+      globals: globals.browser,
+    },
+    plugins: {
+      "react-hooks": reactHooks,
+      "react-refresh": reactRefresh,
+    },
+    rules: {
+      ...reactHooks.configs.recommended.rules,
+      "react-refresh/only-export-components": [
+        "warn",
+        { allowConstantExport: true },
+      ],
+    },
+  },
+);
+`
+
+const reactVitestConfigTemplate = `import { defineConfig } from "vitest/config";
+import react from "@vitejs/plugin-react";
+
+export default defineConfig({
+  plugins: [react()],
+  test: {
+    environment: "jsdom",
+    passWithNoTests: true,
+    css: true,
+    exclude: ["**/node_modules/**", "**/tests/integration/**"],
+  },
+});
+`
 
 func validateManifestForDoctor(path string, out io.Writer) error {
 	mode := output.DetectMode(out)
