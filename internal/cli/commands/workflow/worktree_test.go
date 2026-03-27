@@ -13,11 +13,12 @@ import (
 func TestParseCreateArgs(t *testing.T) {
 	t.Parallel()
 
-	branch, fromRef, uniqueID, noBootstrap, err := parseCreateArgs([]string{
+	branch, fromRef, uniqueID, noBootstrap, skipSync, err := parseCreateArgs([]string{
 		"feature/my-work",
 		"--from", "main",
 		"--id", "feature-my-work-1",
 		"--no-bootstrap",
+		"--skip-sync",
 	})
 	if err != nil {
 		t.Fatalf("parseCreateArgs returned error: %v", err)
@@ -35,12 +36,15 @@ func TestParseCreateArgs(t *testing.T) {
 	if !noBootstrap {
 		t.Fatal("expected noBootstrap=true")
 	}
+	if !skipSync {
+		t.Fatal("expected skipSync=true")
+	}
 }
 
 func TestParseCreateArgsFlagFirst(t *testing.T) {
 	t.Parallel()
 
-	branch, fromRef, uniqueID, noBootstrap, err := parseCreateArgs([]string{
+	branch, fromRef, uniqueID, noBootstrap, skipSync, err := parseCreateArgs([]string{
 		"--from=main",
 		"--id=feature-my-work-2",
 		"feature/my-work",
@@ -61,12 +65,15 @@ func TestParseCreateArgsFlagFirst(t *testing.T) {
 	if noBootstrap {
 		t.Fatal("expected noBootstrap=false")
 	}
+	if skipSync {
+		t.Fatal("expected skipSync=false")
+	}
 }
 
 func TestParseCreateArgsInvalidID(t *testing.T) {
 	t.Parallel()
 
-	_, _, _, _, err := parseCreateArgs([]string{"feature/my-work", "--id", "Bad_ID"})
+	_, _, _, _, _, err := parseCreateArgs([]string{"feature/my-work", "--id", "Bad_ID"})
 	if err == nil {
 		t.Fatal("expected error for non slug-safe unique id")
 	}
@@ -550,6 +557,139 @@ func TestDefaultMergeBaseBranchFallsBackToMain(t *testing.T) {
 	}
 }
 
+func TestRunWorktreeCreateSyncsDefaultBranchFromOrigin(t *testing.T) {
+	origin := filepath.Join(t.TempDir(), "origin.git")
+	gitRun(t, ".", "init", "--bare", "--initial-branch=main", origin)
+
+	repo := filepath.Join(t.TempDir(), "repo")
+	gitRun(t, ".", "clone", origin, repo)
+	gitRun(t, repo, "config", "user.name", "Mono Test")
+	gitRun(t, repo, "config", "user.email", "mono-test@example.com")
+
+	writeFile(t, repo, "README.md", "initial\n")
+	gitRun(t, repo, "add", "README.md")
+	gitRun(t, repo, "commit", "-m", "initial")
+	gitRun(t, repo, "push", "-u", "origin", "main")
+	initialMain := gitOutputString(t, repo, "rev-parse", "main")
+
+	gitRun(t, repo, "checkout", "-b", "commitmessage")
+
+	updater := filepath.Join(t.TempDir(), "updater")
+	gitRun(t, ".", "clone", origin, updater)
+	gitRun(t, updater, "config", "user.name", "Mono Test")
+	gitRun(t, updater, "config", "user.email", "mono-test@example.com")
+	writeFile(t, updater, "README.md", "updated\n")
+	gitRun(t, updater, "add", "README.md")
+	gitRun(t, updater, "commit", "-m", "update main")
+	gitRun(t, updater, "push", "origin", "main")
+	latestMain := gitOutputString(t, updater, "rev-parse", "HEAD")
+
+	if initialMain == latestMain {
+		t.Fatal("expected updater to advance main")
+	}
+
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("os.Getwd: %v", err)
+	}
+	home := t.TempDir()
+	oldHome := os.Getenv("HOME")
+	t.Cleanup(func() {
+		if chdirErr := os.Chdir(wd); chdirErr != nil {
+			t.Fatalf("restore cwd: %v", chdirErr)
+		}
+		if setErr := os.Setenv("HOME", oldHome); setErr != nil {
+			t.Fatalf("restore HOME: %v", setErr)
+		}
+	})
+	if err := os.Chdir(repo); err != nil {
+		t.Fatalf("os.Chdir repo: %v", err)
+	}
+	if err := os.Setenv("HOME", home); err != nil {
+		t.Fatalf("set HOME: %v", err)
+	}
+
+	if err := runWorktreeCreate([]string{"feature/test", "--id", "feature-test", "--no-bootstrap"}); err != nil {
+		t.Fatalf("runWorktreeCreate returned error: %v", err)
+	}
+
+	dest := filepath.Join(home, ".worktrees", filepath.Base(repo), "feature-test")
+	if got := gitOutputString(t, dest, "rev-parse", "HEAD"); got != latestMain {
+		t.Fatalf("expected worktree HEAD %q, got %q", latestMain, got)
+	}
+	if got := gitOutputString(t, repo, "rev-parse", "main"); got != latestMain {
+		t.Fatalf("expected local main to fast-forward to %q, got %q", latestMain, got)
+	}
+}
+
+func TestRunWorktreeCreateSkipSyncUsesCurrentHEAD(t *testing.T) {
+	origin := filepath.Join(t.TempDir(), "origin.git")
+	gitRun(t, ".", "init", "--bare", "--initial-branch=main", origin)
+
+	repo := filepath.Join(t.TempDir(), "repo")
+	gitRun(t, ".", "clone", origin, repo)
+	gitRun(t, repo, "config", "user.name", "Mono Test")
+	gitRun(t, repo, "config", "user.email", "mono-test@example.com")
+
+	writeFile(t, repo, "README.md", "initial\n")
+	gitRun(t, repo, "add", "README.md")
+	gitRun(t, repo, "commit", "-m", "initial")
+	gitRun(t, repo, "push", "-u", "origin", "main")
+	gitRun(t, repo, "checkout", "-b", "commitmessage")
+
+	writeFile(t, repo, "feature.txt", "local head\n")
+	gitRun(t, repo, "add", "feature.txt")
+	gitRun(t, repo, "commit", "-m", "local head")
+	localHead := gitOutputString(t, repo, "rev-parse", "HEAD")
+	localMainBefore := gitOutputString(t, repo, "rev-parse", "main")
+
+	updater := filepath.Join(t.TempDir(), "updater")
+	gitRun(t, ".", "clone", origin, updater)
+	gitRun(t, updater, "config", "user.name", "Mono Test")
+	gitRun(t, updater, "config", "user.email", "mono-test@example.com")
+	writeFile(t, updater, "README.md", "updated\n")
+	gitRun(t, updater, "add", "README.md")
+	gitRun(t, updater, "commit", "-m", "update main")
+	gitRun(t, updater, "push", "origin", "main")
+	latestMain := gitOutputString(t, updater, "rev-parse", "HEAD")
+
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("os.Getwd: %v", err)
+	}
+	home := t.TempDir()
+	oldHome := os.Getenv("HOME")
+	t.Cleanup(func() {
+		if chdirErr := os.Chdir(wd); chdirErr != nil {
+			t.Fatalf("restore cwd: %v", chdirErr)
+		}
+		if setErr := os.Setenv("HOME", oldHome); setErr != nil {
+			t.Fatalf("restore HOME: %v", setErr)
+		}
+	})
+	if err := os.Chdir(repo); err != nil {
+		t.Fatalf("os.Chdir repo: %v", err)
+	}
+	if err := os.Setenv("HOME", home); err != nil {
+		t.Fatalf("set HOME: %v", err)
+	}
+
+	if err := runWorktreeCreate([]string{"feature/test", "--id", "feature-test", "--no-bootstrap", "--skip-sync"}); err != nil {
+		t.Fatalf("runWorktreeCreate returned error: %v", err)
+	}
+
+	dest := filepath.Join(home, ".worktrees", filepath.Base(repo), "feature-test")
+	if got := gitOutputString(t, dest, "rev-parse", "HEAD"); got != localHead {
+		t.Fatalf("expected worktree HEAD %q, got %q", localHead, got)
+	}
+	if got := gitOutputString(t, repo, "rev-parse", "main"); got != localMainBefore {
+		t.Fatalf("expected local main to remain %q, got %q", localMainBefore, got)
+	}
+	if latestMain == localMainBefore {
+		t.Fatal("expected remote main to advance beyond local main")
+	}
+}
+
 func initTestGitRepo(t *testing.T) string {
 	t.Helper()
 	repo := t.TempDir()
@@ -567,6 +707,17 @@ func gitRun(t *testing.T, dir string, args ...string) {
 	if err != nil {
 		t.Fatalf("git %s failed: %v\n%s", args, err, string(out))
 	}
+}
+
+func gitOutputString(t *testing.T, dir string, args ...string) string {
+	t.Helper()
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("git %s output failed: %v", args, err)
+	}
+	return strings.TrimSpace(string(out))
 }
 
 func writeFile(t *testing.T, dir, relPath, content string) {

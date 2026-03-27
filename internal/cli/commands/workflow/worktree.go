@@ -71,7 +71,7 @@ func (c *worktreeCommand) Run(args []string) error {
 func runWorktreeCreate(args []string) error {
 	p := output.DefaultPrinter()
 
-	branch, fromRef, uniqueID, noBootstrap, err := parseCreateArgs(args)
+	branch, fromRef, uniqueID, noBootstrap, skipSync, err := parseCreateArgs(args)
 	if err != nil {
 		return err
 	}
@@ -99,6 +99,18 @@ func runWorktreeCreate(args []string) error {
 
 	if err := os.MkdirAll(baseDir, 0o755); err != nil {
 		return fmt.Errorf("failed to create base worktree directory %s: %w", baseDir, err)
+	}
+
+	if skipSync {
+		if fromRef == "" {
+			fromRef = "HEAD"
+		}
+		p.StepWarn("worktree", "Sync skipped (--skip-sync)")
+	} else {
+		fromRef, err = resolveWorktreeCreateBase(repoRoot, fromRef, p)
+		if err != nil {
+			return err
+		}
 	}
 
 	addCmd := exec.Command("git", "worktree", "add", "-b", branch, dest, fromRef)
@@ -320,57 +332,59 @@ func runWorktreePrune() error {
 	return nil
 }
 
-func parseCreateArgs(args []string) (branch, fromRef, uniqueID string, noBootstrap bool, err error) {
+func parseCreateArgs(args []string) (branch, fromRef, uniqueID string, noBootstrap, skipSync bool, err error) {
 	if len(args) == 0 {
-		return "", "", "", false, fmt.Errorf("usage: mono worktree create <branch> [--from <ref>] [--id <unique-id>] [--no-bootstrap]")
+		return "", "", "", false, false, fmt.Errorf("usage: mono worktree create <branch> [--from <ref>] [--id <unique-id>] [--no-bootstrap] [--skip-sync]")
 	}
 
-	fromRef = "HEAD"
+	fromRef = ""
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
 		switch {
 		case arg == "--no-bootstrap":
 			noBootstrap = true
+		case arg == "--skip-sync":
+			skipSync = true
 		case arg == "--from":
 			if i+1 >= len(args) {
-				return "", "", "", false, fmt.Errorf("--from requires a value")
+				return "", "", "", false, false, fmt.Errorf("--from requires a value")
 			}
 			fromRef = args[i+1]
 			i++
 		case strings.HasPrefix(arg, "--from="):
 			fromRef = strings.TrimPrefix(arg, "--from=")
 			if fromRef == "" {
-				return "", "", "", false, fmt.Errorf("--from requires a value")
+				return "", "", "", false, false, fmt.Errorf("--from requires a value")
 			}
 		case arg == "--id":
 			if i+1 >= len(args) {
-				return "", "", "", false, fmt.Errorf("--id requires a value")
+				return "", "", "", false, false, fmt.Errorf("--id requires a value")
 			}
 			uniqueID = args[i+1]
 			i++
 		case strings.HasPrefix(arg, "--id="):
 			uniqueID = strings.TrimPrefix(arg, "--id=")
 			if uniqueID == "" {
-				return "", "", "", false, fmt.Errorf("--id requires a value")
+				return "", "", "", false, false, fmt.Errorf("--id requires a value")
 			}
 		case strings.HasPrefix(arg, "-"):
-			return "", "", "", false, fmt.Errorf("unknown flag %q", arg)
+			return "", "", "", false, false, fmt.Errorf("unknown flag %q", arg)
 		default:
 			if branch != "" {
-				return "", "", "", false, fmt.Errorf("unexpected extra argument %q", arg)
+				return "", "", "", false, false, fmt.Errorf("unexpected extra argument %q", arg)
 			}
 			branch = arg
 		}
 	}
 
 	if branch == "" {
-		return "", "", "", false, fmt.Errorf("branch is required")
+		return "", "", "", false, false, fmt.Errorf("branch is required")
 	}
 	if uniqueID != "" && sanitizeSlug(uniqueID) != uniqueID {
-		return "", "", "", false, fmt.Errorf("unique id %q must already be slug-safe (lowercase letters, numbers, and hyphens)", uniqueID)
+		return "", "", "", false, false, fmt.Errorf("unique id %q must already be slug-safe (lowercase letters, numbers, and hyphens)", uniqueID)
 	}
 
-	return branch, fromRef, uniqueID, noBootstrap, nil
+	return branch, fromRef, uniqueID, noBootstrap, skipSync, nil
 }
 
 func parseRemoveArgs(args []string) (identifier string, force bool, err error) {
@@ -642,6 +656,51 @@ func shortSHA(sha string) string {
 	return sha
 }
 
+func resolveWorktreeCreateBase(repoRoot, requestedRef string, p output.Printer) (string, error) {
+	remotes, err := gitRemoteNames(repoRoot)
+	if err != nil {
+		return "", err
+	}
+
+	for _, remote := range preferredWorktreeRemotes(remotes) {
+		fetchCmd := exec.Command("git", "fetch", "--prune", remote)
+		fetchCmd.Dir = repoRoot
+		fetchCmd.Stdout = os.Stdout
+		fetchCmd.Stderr = os.Stderr
+		if runErr := fetchCmd.Run(); runErr != nil {
+			return "", fmt.Errorf("git fetch --prune %s failed: %w", remote, runErr)
+		}
+		p.StepOK("worktree", fmt.Sprintf("Fetched latest refs from %s", remote))
+	}
+
+	remoteName, branchName, remoteRef, err := defaultRemoteBaseBranch(repoRoot, remotes)
+	if err != nil {
+		if requestedRef != "" {
+			return requestedRef, nil
+		}
+		return "", err
+	}
+
+	updated, err := fastForwardLocalBranch(repoRoot, branchName, remoteRef)
+	if err != nil {
+		return "", err
+	}
+	if updated {
+		p.StepOK("worktree", fmt.Sprintf("Fast-forwarded local %s to %s", branchName, remoteRef))
+	}
+
+	if requestedRef == "" {
+		p.StepInfo("worktree", fmt.Sprintf("Creating %q from %s", branchName, remoteRef))
+		return remoteRef, nil
+	}
+
+	if requestedRef == branchName || requestedRef == remoteName+"/"+branchName {
+		return remoteRef, nil
+	}
+
+	return requestedRef, nil
+}
+
 func defaultMergeBaseBranch() (string, error) {
 	repoRoot, err := gitRepoRoot()
 	if err != nil {
@@ -666,6 +725,107 @@ func defaultMergeBaseBranch() (string, error) {
 	}
 
 	return "", errors.New("could not determine default base branch (tried origin/HEAD, main, master)")
+}
+
+func gitRemoteNames(repoRoot string) ([]string, error) {
+	cmd := exec.Command("git", "remote")
+	cmd.Dir = repoRoot
+	out, err := cmd.Output()
+	if err != nil {
+		return nil, fmt.Errorf("git remote failed: %w", err)
+	}
+
+	var remotes []string
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		remote := strings.TrimSpace(line)
+		if remote != "" {
+			remotes = append(remotes, remote)
+		}
+	}
+	return remotes, nil
+}
+
+func preferredWorktreeRemotes(remotes []string) []string {
+	seen := make(map[string]struct{}, len(remotes))
+	for _, remote := range remotes {
+		seen[remote] = struct{}{}
+	}
+
+	preferred := make([]string, 0, 2)
+	for _, remote := range []string{"upstream", "origin"} {
+		if _, ok := seen[remote]; ok {
+			preferred = append(preferred, remote)
+		}
+	}
+	return preferred
+}
+
+func defaultRemoteBaseBranch(repoRoot string, remotes []string) (remoteName, branchName, remoteRef string, err error) {
+	preferredRemotes := preferredWorktreeRemotes(remotes)
+	for _, remote := range preferredRemotes {
+		headCmd := exec.Command("git", "symbolic-ref", "--short", "refs/remotes/"+remote+"/HEAD")
+		headCmd.Dir = repoRoot
+		if out, headErr := headCmd.Output(); headErr == nil {
+			ref := strings.TrimSpace(string(out))
+			prefix := remote + "/"
+			if strings.HasPrefix(ref, prefix) {
+				branch := strings.TrimPrefix(ref, prefix)
+				if branch != "" {
+					return remote, branch, ref, nil
+				}
+			}
+		}
+	}
+
+	for _, remote := range preferredRemotes {
+		for _, branch := range []string{"main", "master"} {
+			ref := remote + "/" + branch
+			verifyCmd := exec.Command("git", "rev-parse", "--verify", "--quiet", ref+"^{commit}")
+			verifyCmd.Dir = repoRoot
+			if verifyCmd.Run() == nil {
+				return remote, branch, ref, nil
+			}
+		}
+	}
+
+	return "", "", "", errors.New("could not determine default remote base branch (tried upstream/origin HEAD, main, master)")
+}
+
+func fastForwardLocalBranch(repoRoot, branchName, remoteRef string) (bool, error) {
+	verifyCmd := exec.Command("git", "rev-parse", "--verify", "--quiet", "refs/heads/"+branchName)
+	verifyCmd.Dir = repoRoot
+	if verifyCmd.Run() != nil {
+		return false, nil
+	}
+
+	listCmd := exec.Command("git", "branch", "--format=%(refname:short)|%(worktreepath)")
+	listCmd.Dir = repoRoot
+	out, err := listCmd.Output()
+	if err != nil {
+		return false, fmt.Errorf("git branch --format failed: %w", err)
+	}
+
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		if line == "" {
+			continue
+		}
+		parts := strings.SplitN(line, "|", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		if parts[0] == branchName && strings.TrimSpace(parts[1]) != "" {
+			return false, nil
+		}
+	}
+
+	updateCmd := exec.Command("git", "branch", "-f", branchName, remoteRef)
+	updateCmd.Dir = repoRoot
+	updateCmd.Stdout = os.Stdout
+	updateCmd.Stderr = os.Stderr
+	if err := updateCmd.Run(); err != nil {
+		return false, fmt.Errorf("failed to fast-forward local %s to %s: %w", branchName, remoteRef, err)
+	}
+	return true, nil
 }
 
 func loadWorktreeStatusStore() (*worktreeStatusStore, error) {
@@ -1019,7 +1179,7 @@ func printWorktreeUsage() {
 	p.Summary("mono worktree - Manage git worktrees for this repository")
 	p.Blank()
 	p.Summary("Usage:")
-	p.Summary("  mono worktree create <branch> [--from <ref>] [--id <unique-id>] [--no-bootstrap]")
+	p.Summary("  mono worktree create <branch> [--from <ref>] [--id <unique-id>] [--no-bootstrap] [--skip-sync]")
 	p.Summary("  mono worktree list [--state <active|needs-input|done>]")
 	p.Summary("  mono worktree path <branch-or-id>")
 	p.Summary("  mono worktree tag <IN_PROGRESS|DONE|NEEDS_INPUT>")

@@ -294,6 +294,9 @@ func TestValidateServicesManifestPathAndDeployRules(t *testing.T) {
 	if !containsCode(report, "deploy.required") {
 		t.Fatalf("expected deploy.required diagnostic, got %+v", report.Diagnostics)
 	}
+	if severityForCode(report, "deploy.required") != SeverityWarning {
+		t.Fatalf("expected deploy.required warning, got %+v", report.Diagnostics)
+	}
 }
 
 func TestValidateServicesManifestWarnsOnMissingProjectMarker(t *testing.T) {
@@ -388,6 +391,15 @@ func containsCode(report Report, code string) bool {
 		}
 	}
 	return false
+}
+
+func severityForCode(report Report, code string) Severity {
+	for _, diag := range report.Diagnostics {
+		if diag.Code == code {
+			return diag.Severity
+		}
+	}
+	return ""
 }
 
 func mustWrite(t *testing.T, path, content string) {

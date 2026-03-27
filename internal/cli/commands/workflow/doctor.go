@@ -21,6 +21,11 @@ type doctorCommand struct{}
 
 var runServicePNPMInstall = installPNPMDependencies
 
+type doctorFailure struct {
+	message  string
+	exitCode int
+}
+
 func init() {
 	registerCommand("doctor", &doctorCommand{})
 }
@@ -31,7 +36,18 @@ func (c *doctorCommand) Run(_ []string) error {
 	p.Section("Checking development environment...")
 	p.Blank()
 
-	hasErrors := false
+	shouldValidateManifest := fileExists("services.yaml")
+	failures := make([]doctorFailure, 0)
+	recordFailure := func(message string, err error) {
+		exitCode := core.ExitCodeGeneric
+		if codeErr, ok := core.AsExitCodeError(err); ok {
+			exitCode = codeErr.ExitCode()
+		}
+		failures = append(failures, doctorFailure{
+			message:  message,
+			exitCode: exitCode,
+		})
+	}
 
 	// Check Go
 	goInstalled := false
@@ -39,7 +55,7 @@ func (c *doctorCommand) Run(_ []string) error {
 	if err := checkCommand("go", "version"); err != nil {
 		p.StepErr("doctor", "Go is NOT installed")
 		p.Summary("  Install from: https://go.dev/dl/")
-		hasErrors = true
+		recordFailure("Go is not installed", err)
 	} else {
 		goInstalled = true
 		cmd := exec.Command("go", "version")
@@ -58,7 +74,7 @@ func (c *doctorCommand) Run(_ []string) error {
 			p.Summary(fmt.Sprintf("  %v", err))
 			printGoToolchainDiagnostics()
 			p.Summary("  Reinstall/upgrade Go from: https://go.dev/dl/")
-			hasErrors = true
+			recordFailure("go fix is not available", err)
 		} else {
 			p.Summary("available")
 			p.StepOK("doctor", "go fix is available")
@@ -71,7 +87,7 @@ func (c *doctorCommand) Run(_ []string) error {
 	if err := checkCommand("node", "--version"); err != nil {
 		p.StepErr("doctor", "Node.js is NOT installed")
 		p.Summary("  Install from: https://nodejs.org/ or use nvm")
-		hasErrors = true
+		recordFailure("Node.js is not installed", err)
 	} else {
 		cmd := exec.Command("node", "--version")
 		if output, err := cmd.Output(); err == nil {
@@ -82,6 +98,7 @@ func (c *doctorCommand) Run(_ []string) error {
 	p.Blank()
 
 	// Check pnpm (auto-install if missing)
+	pnpmInstalled := false
 	p.Summary("pnpm (10.x+):")
 	if err := checkCommand("pnpm", "--version"); err != nil {
 		p.StepErr("doctor", "pnpm is NOT installed")
@@ -91,11 +108,13 @@ func (c *doctorCommand) Run(_ []string) error {
 		installCmd.Stderr = os.Stderr
 		if err := installCmd.Run(); err != nil {
 			p.StepErr("doctor", "Failed to install pnpm")
-			hasErrors = true
+			recordFailure("pnpm installation failed", err)
 		} else {
+			pnpmInstalled = true
 			p.StepOK("doctor", "pnpm installed successfully")
 		}
 	} else {
+		pnpmInstalled = true
 		cmd := exec.Command("pnpm", "--version")
 		if output, err := cmd.Output(); err == nil {
 			p.Summary(strings.TrimSpace(string(output)))
@@ -103,10 +122,6 @@ func (c *doctorCommand) Run(_ []string) error {
 		}
 	}
 	p.Blank()
-
-	if hasErrors {
-		return fmt.Errorf("missing critical dependencies")
-	}
 
 	// Check kubectl (optional - only needed for mono infra)
 	p.Summary("kubectl (optional):")
@@ -128,15 +143,17 @@ func (c *doctorCommand) Run(_ []string) error {
 	p.StepStart("doctor", "Checking Go tools from go.mod...")
 	if !fileExists("go.mod") {
 		p.StepWarn("doctor", "go.mod not found; skipping Go tool installation")
+	} else if !goInstalled {
+		p.StepWarn("doctor", "Go is unavailable; skipping Go tool installation")
 	} else {
 		installed, err := installGoTools()
 		if err != nil {
 			p.StepErr("doctor", fmt.Sprintf("Failed to install Go tools: %v", err))
-			return err
+			recordFailure(fmt.Sprintf("Go tool installation failed: %v", err), err)
 		}
-		if installed == 0 {
+		if err == nil && installed == 0 {
 			p.StepOK("doctor", "Go tools already installed")
-		} else {
+		} else if err == nil {
 			p.StepOK("doctor", fmt.Sprintf("Installed %d missing Go tool(s)", installed))
 		}
 	}
@@ -146,77 +163,99 @@ func (c *doctorCommand) Run(_ []string) error {
 	p.StepStart("doctor", "Installing pnpm dependencies...")
 	if !fileExists("package.json") {
 		p.StepWarn("doctor", "package.json not found; skipping pnpm install")
+	} else if !pnpmInstalled {
+		p.StepWarn("doctor", "pnpm is unavailable; skipping pnpm install")
 	} else {
 		pnpmCmd := exec.Command("pnpm", "install", "--frozen-lockfile")
 		pnpmCmd.Stdout = os.Stdout
 		pnpmCmd.Stderr = os.Stderr
 		if err := pnpmCmd.Run(); err != nil {
 			p.StepErr("doctor", fmt.Sprintf("Failed to install pnpm dependencies: %v", err))
-			return err
+			recordFailure(fmt.Sprintf("pnpm dependency installation failed: %v", err), err)
+		} else {
+			p.StepOK("doctor", "pnpm dependencies installed")
 		}
-		p.StepOK("doctor", "pnpm dependencies installed")
 	}
 	p.Blank()
 
 	// Verify mono tool
 	p.StepStart("doctor", "Verifying mono tool...")
-	if !fileExists("services.yaml") {
+	if !shouldValidateManifest {
 		p.StepWarn("doctor", "services.yaml not found; skipping service verification")
 	} else {
 		cfg, err := core.LoadConfig()
 		if err != nil {
-			return err
-		}
-		if err := listServices(); err != nil {
-			return err
-		}
-		p.Blank()
-		p.StepStart("doctor", "Ensuring service task defaults...")
-		updated, err := ensureServiceTaskDefaults(cfg)
-		if err != nil {
-			p.StepErr("doctor", fmt.Sprintf("Failed to ensure service task defaults: %v", err))
-			return err
-		}
-		if len(updated) == 0 {
-			p.StepOK("doctor", "Service task defaults are configured")
+			p.StepErr("doctor", fmt.Sprintf("Failed to load services config: %v", err))
+			recordFailure(fmt.Sprintf("services config load failed: %v", err), err)
 		} else {
-			sort.Strings(updated)
-			for _, svc := range updated {
-				p.Summary(fmt.Sprintf("  Updated React scripts for %s", svc))
+			if err := listServices(); err != nil {
+				p.StepErr("doctor", fmt.Sprintf("Failed to list services: %v", err))
+				recordFailure(fmt.Sprintf("service verification failed: %v", err), err)
+			} else {
+				p.Blank()
+				p.StepStart("doctor", "Ensuring service task defaults...")
+				updated, err := ensureServiceTaskDefaults(cfg)
+				if err != nil {
+					p.StepErr("doctor", fmt.Sprintf("Failed to ensure service task defaults: %v", err))
+					recordFailure(fmt.Sprintf("service task defaults failed: %v", err), err)
+				} else if len(updated) == 0 {
+					p.StepOK("doctor", "Service task defaults are configured")
+				} else {
+					sort.Strings(updated)
+					for _, svc := range updated {
+						p.Summary(fmt.Sprintf("  Updated React scripts for %s", svc))
+					}
+					p.StepOK("doctor", fmt.Sprintf("Configured service task defaults for %d service(s)", len(updated)))
+				}
+				p.Blank()
+				p.StepStart("doctor", "Installing service dependencies...")
+				installed, err := installServiceDependencies(cfg)
+				if err != nil {
+					p.StepErr("doctor", fmt.Sprintf("Failed to install service dependencies: %v", err))
+					recordFailure(fmt.Sprintf("service dependency installation failed: %v", err), err)
+				} else if len(installed) == 0 {
+					p.StepOK("doctor", "Service dependencies are installed")
+				} else {
+					sort.Strings(installed)
+					for _, svc := range installed {
+						p.Summary(fmt.Sprintf("  Installed pnpm dependencies for %s", svc))
+					}
+					p.StepOK("doctor", fmt.Sprintf("Installed service dependencies for %d service(s)", len(installed)))
+				}
+				p.Blank()
 			}
-			p.StepOK("doctor", fmt.Sprintf("Configured service task defaults for %d service(s)", len(updated)))
-		}
-		p.Blank()
-		p.StepStart("doctor", "Installing service dependencies...")
-		installed, err := installServiceDependencies(cfg)
-		if err != nil {
-			p.StepErr("doctor", fmt.Sprintf("Failed to install service dependencies: %v", err))
-			return err
-		}
-		if len(installed) == 0 {
-			p.StepOK("doctor", "Service dependencies are installed")
-		} else {
-			sort.Strings(installed)
-			for _, svc := range installed {
-				p.Summary(fmt.Sprintf("  Installed pnpm dependencies for %s", svc))
-			}
-			p.StepOK("doctor", fmt.Sprintf("Installed service dependencies for %d service(s)", len(installed)))
-		}
-		p.Blank()
-		if err := validateManifestForDoctor("services.yaml", os.Stdout); err != nil {
-			return err
 		}
 	}
 	p.Blank()
 
-	// Install repo-managed git hooks
 	p.StepStart("doctor", "Installing git hooks...")
 	if err := installGitHooks(); err != nil {
 		p.StepErr("doctor", fmt.Sprintf("Failed to install git hooks: %v", err))
-		return err
+		recordFailure(fmt.Sprintf("git hook setup failed: %v", err), err)
+	} else {
+		p.StepOK("doctor", "Git hooks configured")
 	}
-	p.StepOK("doctor", "Git hooks configured")
 	p.Blank()
+
+	if shouldValidateManifest {
+		if err := validateManifestForDoctor("services.yaml", os.Stdout); err != nil {
+			recordFailure(err.Error(), err)
+		}
+		p.Blank()
+	}
+
+	if len(failures) > 0 {
+		p.StepErr("doctor", fmt.Sprintf("Completed with %d failure(s)", len(failures)))
+		p.Summary("  Failures:")
+		exitCode := core.ExitCodeValidation
+		for _, failure := range failures {
+			p.Summary("  - " + failure.message)
+			if failure.exitCode == core.ExitCodeGeneric {
+				exitCode = core.ExitCodeGeneric
+			}
+		}
+		return core.NewExitCodeError(exitCode, fmt.Sprintf("doctor completed with %d failure(s)", len(failures)))
+	}
 
 	p.StepOK("doctor", "All checks passed! Environment is ready.")
 	return nil
@@ -417,6 +456,17 @@ func installGitHooks() error {
 	if err := gitConfigCmd.Run(); err != nil {
 		return fmt.Errorf("set core.hooksPath: %w", err)
 	}
+	p.Summary(fmt.Sprintf("  Configured git core.hooksPath=%s", hooksPath))
+
+	if commitTemplatePath := findCommitTemplatePath(); commitTemplatePath != "" {
+		gitConfigCmd = exec.Command("git", "config", "commit.template", commitTemplatePath)
+		gitConfigCmd.Stdout = nil
+		gitConfigCmd.Stderr = os.Stderr
+		if err := gitConfigCmd.Run(); err != nil {
+			return fmt.Errorf("set commit.template: %w", err)
+		}
+		p.Summary(fmt.Sprintf("  Configured git commit.template=%s", commitTemplatePath))
+	}
 
 	if _, err := os.Stat(preCommitHook); err == nil {
 		if err := os.Chmod(preCommitHook, 0o755); err != nil {
@@ -425,6 +475,19 @@ func installGitHooks() error {
 	}
 
 	return nil
+}
+
+func findCommitTemplatePath() string {
+	candidates := []string{
+		".gitmessage",
+		filepath.Join(".github", ".gitmessage"),
+	}
+	for _, path := range candidates {
+		if fileExists(path) {
+			return path
+		}
+	}
+	return ""
 }
 
 func fileExists(path string) bool {
