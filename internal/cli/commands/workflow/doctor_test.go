@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -374,6 +375,93 @@ func TestInstallServiceDependenciesInstallsSupportedArchetypeDependencies(t *tes
 	}
 }
 
+func TestInstallGitHooksConfiguresHooksPathAndCommitTemplateWhenPresent(t *testing.T) {
+	repo := initGitRepo(t)
+	mustWrite(t, filepath.Join(repo, ".gitmessage"), "subject\n\nbody\n")
+
+	prev, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	t.Cleanup(func() {
+		if chdirErr := os.Chdir(prev); chdirErr != nil {
+			t.Fatalf("restore working dir: %v", chdirErr)
+		}
+	})
+	if err := os.Chdir(repo); err != nil {
+		t.Fatalf("chdir repo: %v", err)
+	}
+
+	if err := installGitHooks(); err != nil {
+		t.Fatalf("installGitHooks returned error: %v", err)
+	}
+
+	if got := gitLocalConfig(t, repo, "core.hooksPath"); got != ".githooks" {
+		t.Fatalf("core.hooksPath = %q, want %q", got, ".githooks")
+	}
+	if got := gitLocalConfig(t, repo, "commit.template"); got != ".gitmessage" {
+		t.Fatalf("commit.template = %q, want %q", got, ".gitmessage")
+	}
+	if _, err := os.Stat(filepath.Join(repo, ".githooks")); err != nil {
+		t.Fatalf("expected .githooks directory to exist: %v", err)
+	}
+}
+
+func TestInstallGitHooksConfiguresCommitTemplateFromGitHubDir(t *testing.T) {
+	repo := initGitRepo(t)
+	mustMkdirAll(t, filepath.Join(repo, ".github"))
+	mustWrite(t, filepath.Join(repo, ".github", ".gitmessage"), "subject\n\nbody\n")
+
+	prev, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	t.Cleanup(func() {
+		if chdirErr := os.Chdir(prev); chdirErr != nil {
+			t.Fatalf("restore working dir: %v", chdirErr)
+		}
+	})
+	if err := os.Chdir(repo); err != nil {
+		t.Fatalf("chdir repo: %v", err)
+	}
+
+	if err := installGitHooks(); err != nil {
+		t.Fatalf("installGitHooks returned error: %v", err)
+	}
+
+	if got := gitLocalConfig(t, repo, "commit.template"); got != ".github/.gitmessage" {
+		t.Fatalf("commit.template = %q, want %q", got, ".github/.gitmessage")
+	}
+}
+
+func TestInstallGitHooksSkipsCommitTemplateWhenMissing(t *testing.T) {
+	repo := initGitRepo(t)
+
+	prev, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	t.Cleanup(func() {
+		if chdirErr := os.Chdir(prev); chdirErr != nil {
+			t.Fatalf("restore working dir: %v", chdirErr)
+		}
+	})
+	if err := os.Chdir(repo); err != nil {
+		t.Fatalf("chdir repo: %v", err)
+	}
+
+	if err := installGitHooks(); err != nil {
+		t.Fatalf("installGitHooks returned error: %v", err)
+	}
+
+	if got := gitLocalConfig(t, repo, "core.hooksPath"); got != ".githooks" {
+		t.Fatalf("core.hooksPath = %q, want %q", got, ".githooks")
+	}
+	if got := gitLocalConfig(t, repo, "commit.template"); got != "" {
+		t.Fatalf("commit.template = %q, want empty", got)
+	}
+}
+
 func readPackageJSON(t *testing.T, path string) map[string]any {
 	t.Helper()
 	data, err := os.ReadFile(path)
@@ -421,4 +509,26 @@ func mustMkdirAll(t *testing.T, path string) {
 	if err := os.MkdirAll(path, 0o755); err != nil {
 		t.Fatalf("mkdir %s: %v", path, err)
 	}
+}
+
+func initGitRepo(t *testing.T) string {
+	t.Helper()
+	repo := t.TempDir()
+	cmd := exec.Command("git", "init")
+	cmd.Dir = repo
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git init: %v (%s)", err, strings.TrimSpace(string(output)))
+	}
+	return repo
+}
+
+func gitLocalConfig(t *testing.T, repo, key string) string {
+	t.Helper()
+	cmd := exec.Command("git", "config", "--local", "--get", key)
+	cmd.Dir = repo
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(output))
 }

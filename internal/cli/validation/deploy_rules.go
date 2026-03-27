@@ -20,7 +20,7 @@ func validateDeployRules(services []manifestService, info map[int]serviceNodeInf
 
 		if svc.Deploy == nil {
 			report.add(Diagnostic{
-				Severity: SeverityError,
+				Severity: SeverityWarning,
 				Code:     "deploy.required",
 				Path:     prefix,
 				Message:  "missing required deploy contract for service",
