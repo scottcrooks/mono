@@ -68,17 +68,25 @@ func resolveBaseRef(baseFlag string) (string, error) {
 	}
 	baseRef, err := defaultMergeBaseBranch()
 	if err != nil {
-		return "", err
+		return localDiffBaseRef, nil
 	}
 	return baseRef, nil
 }
 
 func changedFiles(baseRef string) ([]string, error) {
-	committed, err := gitNameOnlyDiff(baseRef + "...HEAD")
+	committed := []string(nil)
+	if baseRef != localDiffBaseRef {
+		var err error
+		committed, err = gitNameOnlyDiff(baseRef + "...HEAD")
+		if err != nil {
+			return nil, err
+		}
+	}
+	staged, err := gitStagedFiles()
 	if err != nil {
 		return nil, err
 	}
-	workingTree, err := gitNameOnlyDiff("HEAD")
+	unstaged, err := gitUnstagedFiles()
 	if err != nil {
 		return nil, err
 	}
@@ -87,11 +95,14 @@ func changedFiles(baseRef string) ([]string, error) {
 		return nil, err
 	}
 
-	set := make(map[string]struct{}, len(committed)+len(workingTree)+len(untracked))
+	set := make(map[string]struct{}, len(committed)+len(staged)+len(unstaged)+len(untracked))
 	for _, file := range committed {
 		set[file] = struct{}{}
 	}
-	for _, file := range workingTree {
+	for _, file := range staged {
+		set[file] = struct{}{}
+	}
+	for _, file := range unstaged {
 		set[file] = struct{}{}
 	}
 	for _, file := range untracked {
@@ -105,6 +116,22 @@ func changedFiles(baseRef string) ([]string, error) {
 
 func gitNameOnlyDiff(refRange string) ([]string, error) {
 	out, err := gitOutput("diff", "--name-only", refRange)
+	if err != nil {
+		return nil, err
+	}
+	return parseNameOnlyLines(out), nil
+}
+
+func gitStagedFiles() ([]string, error) {
+	out, err := gitOutput("diff", "--name-only", "--cached")
+	if err != nil {
+		return nil, err
+	}
+	return parseNameOnlyLines(out), nil
+}
+
+func gitUnstagedFiles() ([]string, error) {
+	out, err := gitOutput("diff", "--name-only")
 	if err != nil {
 		return nil, err
 	}

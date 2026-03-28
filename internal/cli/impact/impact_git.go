@@ -8,6 +8,8 @@ import (
 
 var gitOutput = gitOutputCmd
 
+const localDiffBaseRef = "local"
+
 func gitOutputCmd(args ...string) (string, error) {
 	cmd := exec.Command("git", args...)
 	out, err := cmd.CombinedOutput()

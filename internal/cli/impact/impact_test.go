@@ -111,6 +111,26 @@ func TestChangedFilesIncludesUntrackedFiles(t *testing.T) {
 	}
 }
 
+func TestChangedFilesFallsBackToLocalTrackedAndUntrackedDiffs(t *testing.T) {
+	repo := initImpactRepoWithFeatureChange(t)
+	detachHeadWithoutBaseRefs(t, repo)
+	withWorkingDir(t, repo)
+
+	writeFile(t, repo, filepath.Join("apps", "api", "api.go"), "package api\n\n// unstaged local change\n")
+	writeFile(t, repo, filepath.Join("apps", "web", "web.go"), "package web\n\n// staged local change\n")
+	gitRun(t, repo, "add", "apps/web/web.go")
+	writeFile(t, repo, filepath.Join("apps", "web", "new_local_file.txt"), "new file\n")
+
+	got, err := changedFiles(localDiffBaseRef)
+	if err != nil {
+		t.Fatalf("changedFiles returned error: %v", err)
+	}
+	want := []string{"apps/api/api.go", "apps/web/new_local_file.txt", "apps/web/web.go"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("unexpected changed files: got %v, want %v", got, want)
+	}
+}
+
 func TestBuildImpactReport(t *testing.T) {
 	repo := initImpactRepoWithFeatureChange(t)
 	withWorkingDir(t, repo)
@@ -133,6 +153,40 @@ func TestBuildImpactReport(t *testing.T) {
 	}
 	if chains := report.Explain["web"]; !reflect.DeepEqual(chains, []string{"lib -> api -> web"}) {
 		t.Fatalf("unexpected explain chains for web: %v", chains)
+	}
+}
+
+func TestBuildImpactReportFallsBackToLocalDiffWhenBaseBranchMissing(t *testing.T) {
+	repo := initImpactRepoWithFeatureChange(t)
+	detachHeadWithoutBaseRefs(t, repo)
+	withWorkingDir(t, repo)
+
+	cfg, err := loadConfig()
+	if err != nil {
+		t.Fatalf("loadConfig returned error: %v", err)
+	}
+
+	writeFile(t, repo, filepath.Join("apps", "api", "api.go"), "package api\n\n// staged local change\n")
+	gitRun(t, repo, "add", "apps/api/api.go")
+	writeFile(t, repo, filepath.Join("apps", "web", "web.go"), "package web\n\n// unstaged local change\n")
+	writeFile(t, repo, filepath.Join("libs", "lib", "new_local_file.txt"), "new file\n")
+
+	report, err := BuildImpactReport(cfg, "", true)
+	if err != nil {
+		t.Fatalf("buildImpactReport returned error: %v", err)
+	}
+
+	if report.BaseRef != localDiffBaseRef {
+		t.Fatalf("expected fallback base ref %q, got %q", localDiffBaseRef, report.BaseRef)
+	}
+	if !reflect.DeepEqual(report.Changed, []string{"api", "lib", "web"}) {
+		t.Fatalf("unexpected changed services: %v", report.Changed)
+	}
+	if !reflect.DeepEqual(report.Impacted, []string{"api", "lib", "web"}) {
+		t.Fatalf("unexpected impacted services: %v", report.Impacted)
+	}
+	if chains := report.Explain["api"]; !reflect.DeepEqual(chains, []string{"api", "lib -> api"}) {
+		t.Fatalf("unexpected explain chains for api: %v", chains)
 	}
 }
 

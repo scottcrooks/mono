@@ -4,6 +4,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -81,6 +82,26 @@ func gitRun(t *testing.T, dir string, args ...string) {
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("git %v failed: %v\n%s", args, err, string(out))
 	}
+}
+
+func gitOutputString(t *testing.T, dir string, args ...string) string {
+	t.Helper()
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("git %v output failed: %v", args, err)
+	}
+	return strings.TrimSpace(string(out))
+}
+
+func detachHeadWithoutBaseRefs(t *testing.T, repo string) {
+	t.Helper()
+
+	head := gitOutputString(t, repo, "rev-parse", "HEAD")
+	gitRun(t, repo, "checkout", "--detach", head)
+	gitRun(t, repo, "branch", "-D", "feature/impact")
+	gitRun(t, repo, "branch", "-D", "main")
 }
 
 func writeFile(t *testing.T, dir, relPath, content string) {

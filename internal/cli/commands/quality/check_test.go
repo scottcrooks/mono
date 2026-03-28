@@ -99,6 +99,78 @@ func TestCheckCommandExecutesPhasesInOrder(t *testing.T) {
 	}
 }
 
+func TestCheckCommandFallsBackToLocalDiffWhenBaseBranchMissing(t *testing.T) {
+	repo := initCheckRepoWithFeatureChange(t)
+	detachHeadWithoutBaseRefs(t, repo)
+	withWorkingDir(t, repo)
+
+	writeFile(t, repo, filepath.Join("apps", "api", "api.go"), "package api\n\n// staged local change\n")
+	gitRun(t, repo, "add", "apps/api/api.go")
+	writeFile(t, repo, filepath.Join("libs", "lib", "lib.go"), "package lib\n\n// unstaged local change\n")
+
+	type phaseCall struct {
+		kind     string
+		task     TaskName
+		services []string
+	}
+	calls := make([]phaseCall, 0, 4)
+
+	original := runCheckTaskPhase
+	runCheckTaskPhase = func(_ *Config, req TaskRequest, _ TaskRunOptions) ([]TaskRunResult, error) {
+		calls = append(calls, phaseCall{
+			kind:     "task",
+			task:     req.Task,
+			services: append([]string(nil), req.Services...),
+		})
+		return []TaskRunResult{}, nil
+	}
+	t.Cleanup(func() {
+		runCheckTaskPhase = original
+	})
+
+	originalInstalls := runCheckDependencyInstalls
+	runCheckDependencyInstalls = func(_ *Config, services []string) ([]DependencyInstallResult, error) {
+		calls = append(calls, phaseCall{
+			kind:     "deps",
+			services: append([]string(nil), services...),
+		})
+		return nil, nil
+	}
+	t.Cleanup(func() {
+		runCheckDependencyInstalls = originalInstalls
+	})
+
+	if err := (&checkCLICommand{}).Run([]string{"mono", "check"}); err != nil {
+		t.Fatalf("check command returned error: %v", err)
+	}
+
+	want := []phaseCall{
+		{kind: "deps", services: []string{"api", "lib"}},
+		{kind: "task", task: TaskLint, services: []string{"api", "lib"}},
+		{kind: "task", task: TaskTypecheck, services: []string{"api"}},
+		{kind: "task", task: TaskTest, services: []string{"api", "lib"}},
+	}
+	if !reflect.DeepEqual(calls, want) {
+		t.Fatalf("unexpected phase calls: got %+v want %+v", calls, want)
+	}
+}
+
+func TestCheckCommandFallbackNoLocalChanges(t *testing.T) {
+	repo := initCheckRepoWithFeatureChange(t)
+	detachHeadWithoutBaseRefs(t, repo)
+	withWorkingDir(t, repo)
+
+	stdout := captureStdout(t, func() {
+		if err := (&checkCLICommand{}).Run([]string{"mono", "check"}); err != nil {
+			t.Fatalf("check command returned error: %v", err)
+		}
+	})
+
+	if !strings.Contains(stdout, "No impacted services. Nothing to check.") {
+		t.Fatalf("unexpected output: %q", stdout)
+	}
+}
+
 func initCheckRepoWithFeatureChange(t *testing.T) string {
 	t.Helper()
 
