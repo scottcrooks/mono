@@ -16,6 +16,8 @@ import (
 	"github.com/scottcrooks/mono/internal/cli/output"
 )
 
+var runTaskRequestWithConfig = RunOrchestratedTaskRequestWithConfig
+
 type taskExecutor struct {
 	cache   taskCache
 	printer output.Printer
@@ -63,10 +65,20 @@ func RunOrchestratedTask(command string, args []string) error {
 		return fmt.Errorf("loading config: %w", err)
 	}
 
-	results, err := RunOrchestratedTaskRequestWithConfig(cfg, TaskRequest{
-		Task:        task,
-		Services:    serviceArgs,
-		Integration: opts.Integration,
+	targetServices, exactServices, err := resolveTaskTargetServices(cfg, task, serviceArgs, opts)
+	if err != nil {
+		return err
+	}
+	if len(targetServices) == 0 {
+		printNoTaskTargets(task, opts.All)
+		return nil
+	}
+
+	results, err := runTaskRequestWithConfig(cfg, TaskRequest{
+		Task:          task,
+		Services:      targetServices,
+		ExactServices: exactServices,
+		Integration:   opts.Integration,
 	}, opts)
 	PrintTaskSummary(results)
 	if err != nil {

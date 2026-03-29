@@ -17,6 +17,27 @@ func TestParseTaskInvocationArgsIntegrationFlag(t *testing.T) {
 	}
 }
 
+func TestParseTaskInvocationArgsSupportsBaseAndAll(t *testing.T) {
+	t.Parallel()
+
+	services, opts, err := parseTaskInvocationArgs([]string{"--base", "main", "--all", "--concurrency=2"}, 4)
+	if err != nil {
+		t.Fatalf("parseTaskInvocationArgs returned error: %v", err)
+	}
+	if len(services) != 0 {
+		t.Fatalf("unexpected services: %v", services)
+	}
+	if opts.BaseRef != "main" {
+		t.Fatalf("unexpected base ref: %q", opts.BaseRef)
+	}
+	if !opts.All {
+		t.Fatalf("expected All=true")
+	}
+	if opts.Concurrency != 2 {
+		t.Fatalf("unexpected concurrency: %d", opts.Concurrency)
+	}
+}
+
 func TestParseTaskInvocationArgsUnknownFlag(t *testing.T) {
 	t.Parallel()
 

@@ -8,12 +8,15 @@ import (
 )
 
 func TestParseCheckArgs(t *testing.T) {
-	base, opts, err := parseCheckArgs([]string{"--base", "main", "--no-cache", "--concurrency", "3"})
+	base, all, opts, err := parseCheckArgs([]string{"--base", "main", "--all", "--no-cache", "--concurrency", "3"})
 	if err != nil {
 		t.Fatalf("parseCheckArgs returned error: %v", err)
 	}
 	if base != "main" {
 		t.Fatalf("unexpected base ref: %q", base)
+	}
+	if !all {
+		t.Fatalf("expected all=true")
 	}
 	if !opts.NoCache {
 		t.Fatalf("expected NoCache=true")
@@ -24,7 +27,7 @@ func TestParseCheckArgs(t *testing.T) {
 }
 
 func TestParseCheckArgsRejectsUnknownArg(t *testing.T) {
-	_, _, err := parseCheckArgs([]string{"api"})
+	_, _, _, err := parseCheckArgs([]string{"api"})
 	if err == nil {
 		t.Fatalf("expected unknown argument error")
 	}
@@ -88,6 +91,57 @@ func TestCheckCommandExecutesPhasesInOrder(t *testing.T) {
 	if len(calls) != 4 {
 		t.Fatalf("expected 4 phases, got %d", len(calls))
 	}
+	want := []phaseCall{
+		{kind: "deps", services: []string{"api", "lib"}},
+		{kind: "task", task: TaskLint, services: []string{"api", "lib"}},
+		{kind: "task", task: TaskTypecheck, services: []string{"api"}},
+		{kind: "task", task: TaskTest, services: []string{"api", "lib"}},
+	}
+	if !reflect.DeepEqual(calls, want) {
+		t.Fatalf("unexpected phase calls: got %+v want %+v", calls, want)
+	}
+}
+
+func TestCheckCommandAllRunsEvenWithoutImpactedServices(t *testing.T) {
+	repo := initCheckRepoWithFeatureChange(t)
+	withWorkingDir(t, repo)
+
+	type phaseCall struct {
+		kind     string
+		task     TaskName
+		services []string
+	}
+	calls := make([]phaseCall, 0, 4)
+
+	original := runCheckTaskPhase
+	runCheckTaskPhase = func(_ *Config, req TaskRequest, _ TaskRunOptions) ([]TaskRunResult, error) {
+		calls = append(calls, phaseCall{
+			kind:     "task",
+			task:     req.Task,
+			services: append([]string(nil), req.Services...),
+		})
+		return []TaskRunResult{}, nil
+	}
+	t.Cleanup(func() {
+		runCheckTaskPhase = original
+	})
+
+	originalInstalls := runCheckDependencyInstalls
+	runCheckDependencyInstalls = func(_ *Config, services []string) ([]DependencyInstallResult, error) {
+		calls = append(calls, phaseCall{
+			kind:     "deps",
+			services: append([]string(nil), services...),
+		})
+		return nil, nil
+	}
+	t.Cleanup(func() {
+		runCheckDependencyInstalls = originalInstalls
+	})
+
+	if err := (&checkCLICommand{}).Run([]string{"mono", "check", "--all", "--base", "HEAD"}); err != nil {
+		t.Fatalf("check command returned error: %v", err)
+	}
+
 	want := []phaseCall{
 		{kind: "deps", services: []string{"api", "lib"}},
 		{kind: "task", task: TaskLint, services: []string{"api", "lib"}},
