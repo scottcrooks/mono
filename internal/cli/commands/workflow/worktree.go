@@ -691,11 +691,11 @@ func resolveWorktreeCreateBase(repoRoot, requestedRef string, p output.Printer) 
 
 	if requestedRef == "" {
 		p.StepInfo("worktree", fmt.Sprintf("Creating %q from %s", branchName, remoteRef))
-		return remoteRef, nil
+		return branchName, nil
 	}
 
 	if requestedRef == branchName || requestedRef == remoteName+"/"+branchName {
-		return remoteRef, nil
+		return branchName, nil
 	}
 
 	return requestedRef, nil

@@ -614,6 +614,9 @@ func TestRunWorktreeCreateSyncsDefaultBranchFromOrigin(t *testing.T) {
 	}
 
 	dest := filepath.Join(home, ".worktrees", filepath.Base(repo), "feature-test")
+	if got := gitOutputString(t, dest, "branch", "--show-current"); got != "feature/test" {
+		t.Fatalf("expected worktree branch %q, got %q", "feature/test", got)
+	}
 	if got := gitOutputString(t, dest, "rev-parse", "HEAD"); got != latestMain {
 		t.Fatalf("expected worktree HEAD %q, got %q", latestMain, got)
 	}
@@ -679,6 +682,9 @@ func TestRunWorktreeCreateSkipSyncUsesCurrentHEAD(t *testing.T) {
 	}
 
 	dest := filepath.Join(home, ".worktrees", filepath.Base(repo), "feature-test")
+	if got := gitOutputString(t, dest, "branch", "--show-current"); got != "feature/test" {
+		t.Fatalf("expected worktree branch %q, got %q", "feature/test", got)
+	}
 	if got := gitOutputString(t, dest, "rev-parse", "HEAD"); got != localHead {
 		t.Fatalf("expected worktree HEAD %q, got %q", localHead, got)
 	}
