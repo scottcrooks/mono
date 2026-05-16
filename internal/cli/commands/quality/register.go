@@ -47,7 +47,7 @@ func runOrchestratedTaskRequestWithConfig(cfg *core.Config, req TaskRequest, opt
 func printTaskSummary(results []TaskRunResult) { tasks.PrintTaskSummary(results) }
 
 func runDependencyInstallsWithConfig(cfg *core.Config, services []string) ([]DependencyInstallResult, error) {
-	return tasks.RunDependencyInstallsWithConfig(cfg, services)
+	return tasks.RunDependencyInstallsWithConfigBuffered(cfg, services)
 }
 
 func printDependencyInstallSummary(results []DependencyInstallResult) {

@@ -43,9 +43,17 @@ func summarizeTaskResults(results []TaskRunResult) TaskRunSummary {
 	return summary
 }
 
+func SummarizeTaskResults(results []TaskRunResult) TaskRunSummary {
+	return summarizeTaskResults(results)
+}
+
+func FormatTaskSummary(summary TaskRunSummary) string {
+	return fmt.Sprintf("Task summary: succeeded=%d failed=%d skipped=%d", summary.Succeeded, summary.Failed, summary.Skipped)
+}
+
 func PrintTaskSummary(results []TaskRunResult) {
 	summary := summarizeTaskResults(results)
 	printer := output.DefaultPrinter()
 	printer.Blank()
-	printer.Summary(fmt.Sprintf("Task summary: succeeded=%d failed=%d skipped=%d", summary.Succeeded, summary.Failed, summary.Skipped))
+	printer.Summary(FormatTaskSummary(summary))
 }

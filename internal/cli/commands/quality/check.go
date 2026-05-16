@@ -7,6 +7,7 @@ import (
 
 	"github.com/scottcrooks/mono/internal/cli/output"
 	"github.com/scottcrooks/mono/internal/cli/selection"
+	"github.com/scottcrooks/mono/internal/cli/tasks"
 )
 
 type checkCLICommand struct{}
@@ -55,6 +56,7 @@ func (c *checkCLICommand) Run(args []string) error {
 	}
 
 	plan := buildPendingCheckPlan(cfg, targetServices)
+	aggregateSummary := tasks.TaskRunSummary{}
 	phaseCount := 0
 	for _, phase := range plan.Phases {
 		if len(phase.Services) == 0 {
@@ -62,14 +64,16 @@ func (c *checkCLICommand) Run(args []string) error {
 		}
 
 		phaseCount++
-		printer.StepStart("check phase", fmt.Sprintf("%s (%d service(s))", phase.Task, len(phase.Services)))
 
 		results, phaseErr := runCheckTaskPhase(cfg, TaskRequest{
 			Task:          phase.Task,
 			Services:      phase.Services,
 			ExactServices: true,
 		}, opts)
-		printTaskSummary(results)
+		phaseSummary := tasks.SummarizeTaskResults(results)
+		aggregateSummary.Succeeded += phaseSummary.Succeeded
+		aggregateSummary.Failed += phaseSummary.Failed
+		aggregateSummary.Skipped += phaseSummary.Skipped
 		if phaseErr != nil {
 			return fmt.Errorf("check phase %q failed: %w", phase.Task, phaseErr)
 		}
@@ -88,12 +92,12 @@ func (c *checkCLICommand) Run(args []string) error {
 	if all {
 		label = "services"
 	}
-	printer.Summary(fmt.Sprintf("Check complete: %s=%d phases=%d", label, len(plan.ImpactedServices), phaseCount))
+	printer.Summary(fmt.Sprintf("Check complete: %s=%d phases=%d succeeded=%d failed=%d skipped=%d", label, len(plan.ImpactedServices), phaseCount, aggregateSummary.Succeeded, aggregateSummary.Failed, aggregateSummary.Skipped))
 	return nil
 }
 
 func parseCheckArgs(args []string) (baseRef string, all bool, opts TaskRunOptions, err error) {
-	opts = TaskRunOptions{Concurrency: defaultTaskConcurrency()}
+	opts = TaskRunOptions{Concurrency: defaultTaskConcurrency(), BufferOutput: true}
 	sawBase := false
 
 	for i := 0; i < len(args); i++ {
@@ -101,6 +105,8 @@ func parseCheckArgs(args []string) (baseRef string, all bool, opts TaskRunOption
 		switch {
 		case arg == "--no-cache":
 			opts.NoCache = true
+		case arg == "--no-buffer":
+			opts.BufferOutput = false
 		case arg == "--all":
 			all = true
 		case arg == "--base":
@@ -130,7 +136,7 @@ func parseCheckArgs(args []string) (baseRef string, all bool, opts TaskRunOption
 			}
 			opts.Concurrency = v
 		default:
-			return "", all, opts, fmt.Errorf("unknown argument %q (usage: mono check [--base <ref>] [--all] [--no-cache] [--concurrency N])", arg)
+			return "", all, opts, fmt.Errorf("unknown argument %q (usage: mono check [--base <ref>] [--all] [--no-cache] [--no-buffer] [--concurrency N])", arg)
 		}
 	}
 

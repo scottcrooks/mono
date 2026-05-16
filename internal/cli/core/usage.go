@@ -11,7 +11,7 @@ func PrintUsage() {
 	p.Blank()
 	p.Summary("Commands:")
 	p.Summary("  affected [--base <ref>] [--explain]  List impacted services from git changes")
-	p.Summary("  check [--base <ref>] [--all] [--no-cache] [--concurrency N]  Run pending lint/typecheck/test for selected services")
+	p.Summary("  check [--base <ref>] [--all] [--no-cache] [--no-buffer] [--concurrency N]  Run pending lint/typecheck/test for selected services")
 	p.Summary("  list                  List all services and their commands")
 	p.Summary("  status [--base <ref>] Show changed/impacted services and planned check tasks")
 	p.Summary("  dev [service...]      Run services with hot reload (concurrent)")

@@ -1,10 +1,12 @@
 package tasks
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -248,9 +250,22 @@ func (e taskExecutor) runReadyBatch(ctx context.Context, ready []readyTask, opts
 
 func (e taskExecutor) runNode(ctx context.Context, task readyTask, opts TaskRunOptions) TaskRunResult {
 	node := task.resolved.Node
+	printer := e.printer
+	var stdoutCapture *bytes.Buffer
+	var stderrCapture *bytes.Buffer
+	var stdoutWriter io.Writer
+	var stderrWriter io.Writer
+	if opts.BufferOutput {
+		stdoutCapture = &bytes.Buffer{}
+		stderrCapture = &bytes.Buffer{}
+		printer = output.NewPrinterWithMode(stdoutCapture, stderrCapture, e.printer.Mode())
+		stdoutWriter = stdoutCapture
+		stderrWriter = stderrCapture
+	}
 	if !taskUsesCache(node.Task) {
 		cmdString := commandForExecution(task.resolved.Service, node, task.resolved.Command, opts)
-		if err := runTaskCommand(ctx, e.printer, task.resolved.Service, node, cmdString); err != nil {
+		if err := runTaskCommand(ctx, printer, task.resolved.Service, node, cmdString, stdoutWriter, stderrWriter); err != nil {
+			e.replayTaskTranscript(stdoutCapture, stderrCapture)
 			return TaskRunResult{Node: node, Status: TaskStatusFailed, Err: err}
 		}
 		return TaskRunResult{Node: node, Status: TaskStatusSucceeded}
@@ -262,15 +277,16 @@ func (e taskExecutor) runNode(ctx context.Context, task readyTask, opts TaskRunO
 		return TaskRunResult{Node: node, Status: TaskStatusFailed, Err: err}
 	}
 	if !opts.NoCache && hit && entry.Key != "" {
-		e.printer.Summary(fmt.Sprintf("[cached] [%s] skipped", node.String()))
+		printer.Summary(fmt.Sprintf("[cached] [%s] skipped", node.String()))
 		return TaskRunResult{Node: node, Status: TaskStatusSkipped, SkipReason: "cached", Cached: true}
 	}
 	if reason := cacheMissReason(opts.NoCache, hit); reason != "" {
-		e.printer.StepWarn(node.String(), "cache miss: "+reason)
+		printer.StepWarn(node.String(), "cache miss: "+reason)
 	}
 
 	cmdString := commandForExecution(task.resolved.Service, node, task.resolved.Command, opts)
-	if err := runTaskCommand(ctx, e.printer, task.resolved.Service, node, cmdString); err != nil {
+	if err := runTaskCommand(ctx, printer, task.resolved.Service, node, cmdString, stdoutWriter, stderrWriter); err != nil {
+		e.replayTaskTranscript(stdoutCapture, stderrCapture)
 		return TaskRunResult{Node: node, Status: TaskStatusFailed, Err: err}
 	}
 
@@ -285,6 +301,15 @@ func (e taskExecutor) runNode(ctx context.Context, task readyTask, opts TaskRunO
 	}
 
 	return TaskRunResult{Node: node, Status: TaskStatusSucceeded}
+}
+
+func (e taskExecutor) replayTaskTranscript(stdoutCapture, stderrCapture *bytes.Buffer) {
+	if stdoutCapture != nil && stdoutCapture.Len() > 0 {
+		_, _ = io.Copy(os.Stdout, stdoutCapture)
+	}
+	if stderrCapture != nil && stderrCapture.Len() > 0 {
+		_, _ = io.Copy(os.Stderr, stderrCapture)
+	}
 }
 
 func taskUsesCache(task TaskName) bool {
@@ -325,7 +350,7 @@ func composeExecutionCacheKey(baseKey string, dependencyKeys []string) string {
 	return hex.EncodeToString(h.Sum(nil))
 }
 
-func runTaskCommand(ctx context.Context, printer output.Printer, svc Service, node TaskNode, cmdString string) error {
+func runTaskCommand(ctx context.Context, printer output.Printer, svc Service, node TaskNode, cmdString string, stdoutWriter, stderrWriter io.Writer) error {
 	printer.StepStart(node.String(), "start")
 	absPath, err := filepath.Abs(svc.Path)
 	if err != nil {
@@ -338,8 +363,14 @@ func runTaskCommand(ctx context.Context, printer output.Printer, svc Service, no
 		return fmt.Errorf("[%s] %w", node, err)
 	}
 	cmd.Dir = absPath
-	cmd.Stdout = output.NewPrefixWriter(fmt.Sprintf("[%s]", node), os.Stdout)
-	cmd.Stderr = output.NewPrefixWriter(fmt.Sprintf("[%s]", node), os.Stderr)
+	if stdoutWriter == nil {
+		stdoutWriter = os.Stdout
+	}
+	if stderrWriter == nil {
+		stderrWriter = os.Stderr
+	}
+	cmd.Stdout = output.NewPrefixWriter(fmt.Sprintf("[%s]", node), stdoutWriter)
+	cmd.Stderr = output.NewPrefixWriter(fmt.Sprintf("[%s]", node), stderrWriter)
 	cmd.Stdin = os.Stdin
 
 	if err := cmd.Run(); err != nil {

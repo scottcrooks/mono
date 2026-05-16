@@ -18,6 +18,9 @@ func TestSummarizeTaskResults(t *testing.T) {
 	if s.Succeeded != 1 || s.Failed != 1 || s.Skipped != 2 {
 		t.Fatalf("unexpected summary: %+v", s)
 	}
+	if got := FormatTaskSummary(s); got != "Task summary: succeeded=1 failed=1 skipped=2" {
+		t.Fatalf("unexpected summary text: %q", got)
+	}
 }
 
 func TestPrintTaskSummary(t *testing.T) {

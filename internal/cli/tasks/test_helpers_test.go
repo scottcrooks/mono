@@ -37,6 +37,15 @@ func writeFile(t *testing.T, dir, relPath, content string) {
 	}
 }
 
+func writeExecutableFile(t *testing.T, dir, relPath, content string) {
+	t.Helper()
+	writeFile(t, dir, relPath, content)
+	full := filepath.Join(dir, relPath)
+	if err := os.Chmod(full, 0o755); err != nil {
+		t.Fatalf("chmod %s: %v", full, err)
+	}
+}
+
 func captureStdout(t *testing.T, fn func()) string {
 	t.Helper()
 	old := os.Stdout
@@ -60,6 +69,54 @@ func captureStdout(t *testing.T, fn func()) string {
 		t.Fatalf("close reader: %v", err)
 	}
 	return buf.String()
+}
+
+func captureStreams(t *testing.T, fn func()) (string, string) {
+	t.Helper()
+
+	oldStdout := os.Stdout
+	oldStderr := os.Stderr
+	stdoutR, stdoutW, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("os.Pipe stdout: %v", err)
+	}
+	stderrR, stderrW, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("os.Pipe stderr: %v", err)
+	}
+	os.Stdout = stdoutW
+	os.Stderr = stderrW
+	t.Cleanup(func() {
+		os.Stdout = oldStdout
+		os.Stderr = oldStderr
+	})
+
+	fn()
+
+	if err := stdoutW.Close(); err != nil {
+		t.Fatalf("close stdout writer: %v", err)
+	}
+	if err := stderrW.Close(); err != nil {
+		t.Fatalf("close stderr writer: %v", err)
+	}
+
+	var stdoutBuf bytes.Buffer
+	if _, err := io.Copy(&stdoutBuf, stdoutR); err != nil {
+		t.Fatalf("copy stdout: %v", err)
+	}
+	if err := stdoutR.Close(); err != nil {
+		t.Fatalf("close stdout reader: %v", err)
+	}
+
+	var stderrBuf bytes.Buffer
+	if _, err := io.Copy(&stderrBuf, stderrR); err != nil {
+		t.Fatalf("copy stderr: %v", err)
+	}
+	if err := stderrR.Close(); err != nil {
+		t.Fatalf("close stderr reader: %v", err)
+	}
+
+	return stdoutBuf.String(), stderrBuf.String()
 }
 
 func gitRun(t *testing.T, dir string, args ...string) {

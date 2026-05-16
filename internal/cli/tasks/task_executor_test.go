@@ -64,6 +64,159 @@ func TestTaskExecutorHonorsDependencyOrdering(t *testing.T) {
 	}
 }
 
+func TestTaskExecutorBufferedSuccessStaysQuiet(t *testing.T) {
+	repo := t.TempDir()
+	withWorkingDir(t, repo)
+	mustWrite(t, filepath.Join(repo, "api", "go.mod"), "module api\n\ngo 1.24\n")
+	mustWrite(t, filepath.Join(repo, "api", "api.go"), "package api\n")
+	writeExecutableFile(t, repo, filepath.Join("api", "emit-success.js"), "process.stdout.write('success-stdout\\n')\nprocess.stderr.write('success-stderr\\n')\n")
+
+	cfg := &Config{Services: []Service{
+		{Name: "api", Path: "api", Kind: "service", Archetype: "go"},
+	}}
+	resolved := []ResolvedTaskNode{
+		{Node: TaskNode{Service: "api", Task: TaskBuild}, Service: cfg.Services[0], Command: "node emit-success.js"},
+	}
+	graph, err := buildTaskGraph(cfg, resolved)
+	if err != nil {
+		t.Fatalf("buildTaskGraph: %v", err)
+	}
+
+	exec := newTaskExecutor()
+	stdout, stderr := captureStreams(t, func() {
+		results, err := exec.execute(context.Background(), graph, TaskRunOptions{NoCache: true, Concurrency: 1, BufferOutput: true})
+		if err != nil {
+			t.Fatalf("execute: %v", err)
+		}
+		if len(results) != 1 || results[0].Status != TaskStatusSucceeded {
+			t.Fatalf("unexpected results: %+v", results)
+		}
+	})
+
+	if stdout != "" {
+		t.Fatalf("expected no stdout, got %q", stdout)
+	}
+	if stderr != "" {
+		t.Fatalf("expected no stderr, got %q", stderr)
+	}
+}
+
+func TestTaskExecutorBufferedCacheMissStaysQuiet(t *testing.T) {
+	repo := t.TempDir()
+	withWorkingDir(t, repo)
+	mustWrite(t, filepath.Join(repo, "api", "go.mod"), "module api\n\ngo 1.24\n")
+	mustWrite(t, filepath.Join(repo, "api", "api.go"), "package api\n")
+
+	cfg := &Config{Services: []Service{
+		{Name: "api", Path: "api", Kind: "service", Archetype: "go"},
+	}}
+	resolved := []ResolvedTaskNode{
+		{Node: TaskNode{Service: "api", Task: TaskBuild}, Service: cfg.Services[0], Command: "go version"},
+	}
+	graph, err := buildTaskGraph(cfg, resolved)
+	if err != nil {
+		t.Fatalf("buildTaskGraph: %v", err)
+	}
+
+	exec := newTaskExecutor()
+	stdout, stderr := captureStreams(t, func() {
+		results, err := exec.execute(context.Background(), graph, TaskRunOptions{Concurrency: 1, BufferOutput: true})
+		if err != nil {
+			t.Fatalf("execute: %v", err)
+		}
+		if len(results) != 1 || results[0].Status != TaskStatusSucceeded {
+			t.Fatalf("unexpected results: %+v", results)
+		}
+	})
+
+	if stdout != "" {
+		t.Fatalf("expected no stdout, got %q", stdout)
+	}
+	if stderr != "" {
+		t.Fatalf("expected no stderr, got %q", stderr)
+	}
+}
+
+func TestTaskExecutorBufferedFailureReplaysTranscript(t *testing.T) {
+	repo := t.TempDir()
+	withWorkingDir(t, repo)
+	mustWrite(t, filepath.Join(repo, "api", "go.mod"), "module api\n\ngo 1.24\n")
+	mustWrite(t, filepath.Join(repo, "api", "api.go"), "package api\n")
+	writeExecutableFile(t, repo, filepath.Join("api", "emit-fail.js"), "process.stdout.write('fail-stdout\\n')\nprocess.stderr.write('fail-stderr\\n')\nprocess.exit(1)\n")
+
+	cfg := &Config{Services: []Service{
+		{Name: "api", Path: "api", Kind: "service", Archetype: "go"},
+	}}
+	resolved := []ResolvedTaskNode{
+		{Node: TaskNode{Service: "api", Task: TaskBuild}, Service: cfg.Services[0], Command: "node emit-fail.js"},
+	}
+	graph, err := buildTaskGraph(cfg, resolved)
+	if err != nil {
+		t.Fatalf("buildTaskGraph: %v", err)
+	}
+
+	exec := newTaskExecutor()
+	stdout, stderr := captureStreams(t, func() {
+		results, err := exec.execute(context.Background(), graph, TaskRunOptions{NoCache: true, Concurrency: 1, BufferOutput: true})
+		if err == nil {
+			t.Fatalf("expected execute error")
+		}
+		if len(results) != 1 || results[0].Status != TaskStatusFailed {
+			t.Fatalf("unexpected results: %+v", results)
+		}
+	})
+
+	if !strings.Contains(stdout, "[api:build] start") {
+		t.Fatalf("expected buffered step start in stdout, got %q", stdout)
+	}
+	if !strings.Contains(stdout, "[api:build] fail-stdout") {
+		t.Fatalf("expected buffered stdout replay, got %q", stdout)
+	}
+	if !strings.Contains(stderr, "[api:build] fail-stderr") {
+		t.Fatalf("expected buffered stderr replay, got %q", stderr)
+	}
+	if !strings.Contains(stderr, "[api:build] failed") {
+		t.Fatalf("expected failure line in stderr, got %q", stderr)
+	}
+}
+
+func TestTaskExecutorLivePathStreamsOutput(t *testing.T) {
+	repo := t.TempDir()
+	withWorkingDir(t, repo)
+	mustWrite(t, filepath.Join(repo, "api", "go.mod"), "module api\n\ngo 1.24\n")
+	mustWrite(t, filepath.Join(repo, "api", "api.go"), "package api\n")
+	writeExecutableFile(t, repo, filepath.Join("api", "emit-live.js"), "process.stdout.write('live-stdout\\n')\nprocess.stderr.write('live-stderr\\n')\n")
+
+	cfg := &Config{Services: []Service{
+		{Name: "api", Path: "api", Kind: "service", Archetype: "go"},
+	}}
+	resolved := []ResolvedTaskNode{
+		{Node: TaskNode{Service: "api", Task: TaskBuild}, Service: cfg.Services[0], Command: "node emit-live.js"},
+	}
+	graph, err := buildTaskGraph(cfg, resolved)
+	if err != nil {
+		t.Fatalf("buildTaskGraph: %v", err)
+	}
+
+	exec := newTaskExecutor()
+	stdout, stderr := captureStreams(t, func() {
+		results, err := exec.execute(context.Background(), graph, TaskRunOptions{NoCache: true, Concurrency: 1})
+		if err != nil {
+			t.Fatalf("execute: %v", err)
+		}
+		if len(results) != 1 || results[0].Status != TaskStatusSucceeded {
+			t.Fatalf("unexpected results: %+v", results)
+		}
+	})
+
+	if !strings.Contains(stdout, "[api:build] live-stdout") {
+		t.Fatalf("expected live stdout, got %q", stdout)
+	}
+	if !strings.Contains(stderr, "[api:build] live-stderr") {
+		t.Fatalf("expected live stderr, got %q", stderr)
+	}
+}
+
 func TestTaskExecutorFailureSkipsRemaining(t *testing.T) {
 	repo := t.TempDir()
 	withWorkingDir(t, repo)

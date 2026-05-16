@@ -5,6 +5,8 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/scottcrooks/mono/internal/cli/tasks"
 )
 
 func TestParseCheckArgs(t *testing.T) {
@@ -23,6 +25,19 @@ func TestParseCheckArgs(t *testing.T) {
 	}
 	if opts.Concurrency != 3 {
 		t.Fatalf("unexpected concurrency: %d", opts.Concurrency)
+	}
+	if !opts.BufferOutput {
+		t.Fatalf("expected BufferOutput=true by default")
+	}
+}
+
+func TestParseCheckArgsNoBuffer(t *testing.T) {
+	_, _, opts, err := parseCheckArgs([]string{"--no-buffer"})
+	if err != nil {
+		t.Fatalf("parseCheckArgs returned error: %v", err)
+	}
+	if opts.BufferOutput {
+		t.Fatalf("expected BufferOutput=false")
 	}
 }
 
@@ -99,6 +114,56 @@ func TestCheckCommandExecutesPhasesInOrder(t *testing.T) {
 	}
 	if !reflect.DeepEqual(calls, want) {
 		t.Fatalf("unexpected phase calls: got %+v want %+v", calls, want)
+	}
+}
+
+func TestCheckCommandPrintsSingleFinalSummary(t *testing.T) {
+	repo := initCheckRepoWithFeatureChange(t)
+	withWorkingDir(t, repo)
+
+	original := runCheckDependencyInstalls
+	runCheckDependencyInstalls = func(_ *Config, services []string) ([]DependencyInstallResult, error) {
+		return nil, nil
+	}
+	t.Cleanup(func() {
+		runCheckDependencyInstalls = original
+	})
+
+	originalTask := runCheckTaskPhase
+	runCheckTaskPhase = func(_ *Config, req TaskRequest, _ TaskRunOptions) ([]TaskRunResult, error) {
+		switch req.Task {
+		case TaskLint:
+			return []TaskRunResult{
+				{Status: tasks.TaskStatusSucceeded},
+				{Status: tasks.TaskStatusSkipped},
+			}, nil
+		case TaskTypecheck:
+			return []TaskRunResult{{Status: tasks.TaskStatusSucceeded}}, nil
+		case TaskTest:
+			return []TaskRunResult{
+				{Status: tasks.TaskStatusSucceeded},
+				{Status: tasks.TaskStatusSucceeded},
+			}, nil
+		default:
+			t.Fatalf("unexpected task: %s", req.Task)
+			return nil, nil
+		}
+	}
+	t.Cleanup(func() {
+		runCheckTaskPhase = originalTask
+	})
+
+	stdout := captureStdout(t, func() {
+		if err := (&checkCLICommand{}).Run([]string{"mono", "check", "--base", "main"}); err != nil {
+			t.Fatalf("check command returned error: %v", err)
+		}
+	})
+
+	if strings.Count(stdout, "Task summary:") != 0 {
+		t.Fatalf("unexpected per-phase summary chatter: %q", stdout)
+	}
+	if !strings.Contains(stdout, "Check complete: impacted=2 phases=3 succeeded=4 failed=0 skipped=1") {
+		t.Fatalf("unexpected final summary: %q", stdout)
 	}
 }
 

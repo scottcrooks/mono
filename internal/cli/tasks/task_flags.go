@@ -7,11 +7,12 @@ import (
 )
 
 type TaskRunOptions struct {
-	NoCache     bool
-	Concurrency int
-	Integration bool
-	BaseRef     string
-	All         bool
+	NoCache      bool
+	Concurrency  int
+	Integration  bool
+	BaseRef      string
+	All          bool
+	BufferOutput bool
 }
 
 func parseTaskInvocationArgs(args []string, defaultConcurrency int) ([]string, TaskRunOptions, error) {

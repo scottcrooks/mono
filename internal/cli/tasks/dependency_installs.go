@@ -1,8 +1,10 @@
 package tasks
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -72,22 +74,42 @@ func DependencyInstallTargetsForServices(cfg *Config, services []string) ([]Depe
 }
 
 func RunDependencyInstallsWithConfig(cfg *Config, services []string) ([]DependencyInstallResult, error) {
+	return runDependencyInstallsWithConfig(cfg, services, false)
+}
+
+func RunDependencyInstallsWithConfigBuffered(cfg *Config, services []string) ([]DependencyInstallResult, error) {
+	return runDependencyInstallsWithConfig(cfg, services, true)
+}
+
+func runDependencyInstallsWithConfig(cfg *Config, services []string, bufferOutput bool) ([]DependencyInstallResult, error) {
 	targets, err := DependencyInstallTargetsForServices(cfg, services)
 	if err != nil {
 		return nil, err
 	}
 
-	printer := output.DefaultPrinter()
 	results := make([]DependencyInstallResult, 0, len(targets))
 	failures := 0
+	printer := output.DefaultPrinter()
+	var stdoutCapture *bytes.Buffer
+	var stderrCapture *bytes.Buffer
+	var stdoutWriter io.Writer
+	var stderrWriter io.Writer
+	if bufferOutput {
+		stdoutCapture = &bytes.Buffer{}
+		stderrCapture = &bytes.Buffer{}
+		printer = output.NewPrinterWithMode(stdoutCapture, stderrCapture, printer.Mode())
+		stdoutWriter = stdoutCapture
+		stderrWriter = stderrCapture
+	}
 
 	for _, target := range targets {
 		label := fmt.Sprintf("deps:%s", target.Archetype)
 		details := fmt.Sprintf("%s (%s)", target.Dir, strings.Join(target.Services, ", "))
 		printer.StepStart(label, details)
 
-		if err := runDependencyInstallCommand(context.Background(), target); err != nil {
+		if err := runDependencyInstallCommand(context.Background(), target, stdoutWriter, stderrWriter); err != nil {
 			printer.StepErr(label, "failed")
+			replayDependencyInstallTranscript(stdoutCapture, stderrCapture)
 			results = append(results, DependencyInstallResult{
 				Target: target,
 				Status: TaskStatusFailed,
@@ -108,6 +130,15 @@ func RunDependencyInstallsWithConfig(cfg *Config, services []string) ([]Dependen
 		return results, fmt.Errorf("%d dependency install target(s) failed", failures)
 	}
 	return results, nil
+}
+
+func replayDependencyInstallTranscript(stdoutCapture, stderrCapture *bytes.Buffer) {
+	if stdoutCapture != nil && stdoutCapture.Len() > 0 {
+		_, _ = io.Copy(os.Stdout, stdoutCapture)
+	}
+	if stderrCapture != nil && stderrCapture.Len() > 0 {
+		_, _ = io.Copy(os.Stderr, stderrCapture)
+	}
 }
 
 func PrintDependencyInstallSummary(results []DependencyInstallResult) {
@@ -307,7 +338,7 @@ func findNearestRepoFileDir(startPath, filename string) (string, bool, error) {
 	}
 }
 
-func executeDependencyInstallCommand(ctx context.Context, target DependencyInstallTarget) error {
+func executeDependencyInstallCommand(ctx context.Context, target DependencyInstallTarget, stdoutWriter, stderrWriter io.Writer) error {
 	parts := strings.Fields(target.Command)
 	cmd, err := commandFromParts(ctx, parts)
 	if err != nil {
@@ -319,8 +350,14 @@ func executeDependencyInstallCommand(ctx context.Context, target DependencyInsta
 		return err
 	}
 	cmd.Dir = absPath
-	cmd.Stdout = output.NewPrefixWriter(fmt.Sprintf("[deps:%s]", target.Archetype), os.Stdout)
-	cmd.Stderr = output.NewPrefixWriter(fmt.Sprintf("[deps:%s]", target.Archetype), os.Stderr)
+	if stdoutWriter == nil {
+		stdoutWriter = os.Stdout
+	}
+	if stderrWriter == nil {
+		stderrWriter = os.Stderr
+	}
+	cmd.Stdout = output.NewPrefixWriter(fmt.Sprintf("[deps:%s]", target.Archetype), stdoutWriter)
+	cmd.Stderr = output.NewPrefixWriter(fmt.Sprintf("[deps:%s]", target.Archetype), stderrWriter)
 	cmd.Stdin = os.Stdin
 
 	if err := cmd.Run(); err != nil {
