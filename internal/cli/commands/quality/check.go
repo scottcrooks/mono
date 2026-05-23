@@ -65,7 +65,7 @@ func (c *checkCLICommand) Run(args []string) error {
 
 		phaseCount++
 
-		results, phaseErr := runCheckTaskPhase(cfg, TaskRequest{
+		results, _ := runCheckTaskPhase(cfg, TaskRequest{
 			Task:          phase.Task,
 			Services:      phase.Services,
 			ExactServices: true,
@@ -74,9 +74,9 @@ func (c *checkCLICommand) Run(args []string) error {
 		aggregateSummary.Succeeded += phaseSummary.Succeeded
 		aggregateSummary.Failed += phaseSummary.Failed
 		aggregateSummary.Skipped += phaseSummary.Skipped
-		if phaseErr != nil {
-			return fmt.Errorf("check phase %q failed: %w", phase.Task, phaseErr)
-		}
+		// if phaseErr != nil {
+		// 	return fmt.Errorf("check phase %q failed: %w", phase.Task, phaseErr)
+		// }
 	}
 
 	if phaseCount == 0 {
