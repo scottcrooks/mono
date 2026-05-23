@@ -48,6 +48,57 @@ var taskTemplates = map[string]archetypeTemplate{
 			TaskAudit:     "pnpm audit",
 		},
 	},
+	"ts-ink": {
+		serviceTasks: map[TaskName]string{
+			TaskBuild:     "pnpm build",
+			TaskLint:      "pnpm lint",
+			TaskTypecheck: "pnpm typecheck",
+			TaskTest:      "pnpm test",
+			TaskAudit:     "pnpm audit",
+			TaskPackage:   "pnpm build",
+		},
+		packageTasks: map[TaskName]string{
+			TaskBuild:     "pnpm build",
+			TaskLint:      "pnpm lint",
+			TaskTypecheck: "pnpm typecheck",
+			TaskTest:      "pnpm test",
+			TaskAudit:     "pnpm audit",
+		},
+	},
+	"ts-node": {
+		serviceTasks: map[TaskName]string{
+			TaskBuild:     "pnpm build",
+			TaskLint:      "pnpm lint",
+			TaskTypecheck: "pnpm typecheck",
+			TaskTest:      "pnpm test",
+			TaskAudit:     "pnpm audit",
+			TaskPackage:   "pnpm build",
+		},
+		packageTasks: map[TaskName]string{
+			TaskBuild:     "pnpm build",
+			TaskLint:      "pnpm lint",
+			TaskTypecheck: "pnpm typecheck",
+			TaskTest:      "pnpm test",
+			TaskAudit:     "pnpm audit",
+		},
+	},
+	"ts-lib": {
+		serviceTasks: map[TaskName]string{
+			TaskBuild:     "pnpm build",
+			TaskLint:      "pnpm lint",
+			TaskTypecheck: "pnpm typecheck",
+			TaskTest:      "pnpm test",
+			TaskAudit:     "pnpm audit",
+			TaskPackage:   "pnpm build",
+		},
+		packageTasks: map[TaskName]string{
+			TaskBuild:     "pnpm build",
+			TaskLint:      "pnpm lint",
+			TaskTypecheck: "pnpm typecheck",
+			TaskTest:      "pnpm test",
+			TaskAudit:     "pnpm audit",
+		},
+	},
 }
 
 func TaskCommandForService(svc Service, task TaskName) (string, bool, string) {

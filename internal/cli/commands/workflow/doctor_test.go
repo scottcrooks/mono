@@ -211,8 +211,10 @@ func TestEnsureReactServiceDefaultsAddsMissingScripts(t *testing.T) {
 	assertScript(t, scripts, "audit", "pnpm audit --prod")
 	assertScript(t, pkg["devDependencies"].(map[string]any), "eslint", "^9.18.0")
 	assertScript(t, pkg["devDependencies"].(map[string]any), "vitest", "^3.0.0")
-	assertFileContains(t, filepath.Join(svcPath, "eslint.config.js"), `import js from "@eslint/js";`)
 	assertFileContains(t, filepath.Join(svcPath, "vitest.config.ts"), `passWithNoTests: true`)
+	if _, statErr := os.Stat(filepath.Join(svcPath, "eslint.config.js")); !os.IsNotExist(statErr) {
+		t.Fatalf("expected eslint.config.js to be untouched by doctor, got err=%v", statErr)
+	}
 }
 
 func TestEnsureReactServiceDefaultsPreservesExistingScripts(t *testing.T) {
@@ -288,7 +290,6 @@ func TestEnsureReactServiceDefaultsNoopWhenAlreadyConfigured(t *testing.T) {
 `
 	pkgPath := filepath.Join(svcPath, "package.json")
 	mustWrite(t, pkgPath, original)
-	mustWrite(t, filepath.Join(svcPath, "eslint.config.js"), reactEslintConfigTemplate)
 	mustWrite(t, filepath.Join(svcPath, "vitest.config.ts"), reactVitestConfigTemplate)
 
 	prev, err := os.Getwd()
@@ -328,6 +329,8 @@ func TestInstallServiceDependenciesInstallsSupportedArchetypeDependencies(t *tes
 	repo := t.TempDir()
 	mustMkdirAll(t, filepath.Join(repo, "apps", "web"))
 	mustWrite(t, filepath.Join(repo, "apps", "web", "package.json"), `{"name":"web"}`)
+	mustMkdirAll(t, filepath.Join(repo, "apps", "daemon"))
+	mustWrite(t, filepath.Join(repo, "apps", "daemon", "package.json"), `{"name":"daemon"}`)
 	mustMkdirAll(t, filepath.Join(repo, "apps", "api"))
 	mustWrite(t, filepath.Join(repo, "apps", "api", "go.mod"), "module api\n")
 
@@ -360,6 +363,7 @@ func TestInstallServiceDependenciesInstallsSupportedArchetypeDependencies(t *tes
 	installed, err := installServiceDependencies(&core.Config{
 		Services: []core.Service{
 			{Name: "web", Path: "apps/web", Archetype: "react"},
+			{Name: "daemon", Path: "apps/daemon", Archetype: "ts-node"},
 			{Name: "api", Path: "apps/api", Archetype: "go"},
 			{Name: "missing", Path: "apps/missing", Archetype: "react"},
 		},
@@ -367,10 +371,10 @@ func TestInstallServiceDependenciesInstallsSupportedArchetypeDependencies(t *tes
 	if err != nil {
 		t.Fatalf("installServiceDependencies returned error: %v", err)
 	}
-	if !reflect.DeepEqual(installed, []string{"api", "web"}) {
+	if !reflect.DeepEqual(installed, []string{"api", "daemon", "web"}) {
 		t.Fatalf("unexpected installed services: %v", installed)
 	}
-	if len(calls) != 1 || calls[0] != "apps/web" {
+	if !reflect.DeepEqual(calls, []string{"apps/daemon", "apps/web"}) {
 		t.Fatalf("unexpected pnpm install calls: %v", calls)
 	}
 }

@@ -91,6 +91,38 @@ func TestDependencyInstallTargetsForServicesFallsBackWhenWorkspaceExcludesServic
 	}
 }
 
+func TestDependencyInstallTargetsForServicesDedupesPnpmAcrossArchetypes(t *testing.T) {
+	repo := t.TempDir()
+	withWorkingDir(t, repo)
+
+	writeFile(t, repo, "pnpm-workspace.yaml", "packages:\n  - apps/*\n  - packages/*\n")
+	writeFile(t, repo, "package.json", `{"name":"repo-root","private":true}`)
+	writeFile(t, repo, filepath.Join("apps", "web", "package.json"), `{"name":"web"}`)
+	writeFile(t, repo, filepath.Join("apps", "daemon", "package.json"), `{"name":"daemon"}`)
+	writeFile(t, repo, filepath.Join("packages", "core", "package.json"), `{"name":"core"}`)
+
+	targets, err := DependencyInstallTargetsForServices(&Config{
+		Services: []Service{
+			{Name: "web", Path: "apps/web", Archetype: "react"},
+			{Name: "daemon", Path: "apps/daemon", Archetype: "ts-node"},
+			{Name: "core", Path: "packages/core", Archetype: "ts-lib"},
+		},
+	}, []string{"web", "daemon", "core"})
+	if err != nil {
+		t.Fatalf("DependencyInstallTargetsForServices returned error: %v", err)
+	}
+
+	if len(targets) != 1 {
+		t.Fatalf("expected a single pnpm install target, got %+v", targets)
+	}
+	if targets[0].Dir != "." || targets[0].Command != "pnpm install" {
+		t.Fatalf("unexpected mixed target location/command: %+v", targets[0])
+	}
+	if !reflect.DeepEqual(targets[0].Services, []string{"core", "daemon", "web"}) {
+		t.Fatalf("unexpected mixed target services: %+v", targets[0].Services)
+	}
+}
+
 func TestRunDependencyInstallsWithConfigExecutesResolvedTargets(t *testing.T) {
 	repo := t.TempDir()
 	withWorkingDir(t, repo)

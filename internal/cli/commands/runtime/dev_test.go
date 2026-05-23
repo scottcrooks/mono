@@ -95,6 +95,24 @@ func TestResolveDevCommandArchetypeDefaults(t *testing.T) {
 			ok:   true,
 		},
 		{
+			name: "ts-ink",
+			svc:  Service{Name: "sonata", Archetype: "ts-ink"},
+			want: "pnpm dev",
+			ok:   true,
+		},
+		{
+			name: "ts-node",
+			svc:  Service{Name: "sonatad", Archetype: "ts-node"},
+			want: "pnpm dev",
+			ok:   true,
+		},
+		{
+			name: "ts-lib",
+			svc:  Service{Name: "core", Archetype: "ts-lib"},
+			want: "",
+			ok:   false,
+		},
+		{
 			name: "unknown",
 			svc:  Service{Name: "custom", Archetype: "unknown"},
 			want: "",

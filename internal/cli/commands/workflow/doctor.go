@@ -597,7 +597,6 @@ func defaultReactDevDependencies() map[string]string {
 
 func ensureReactConfigFiles(svc core.Service) (bool, error) {
 	files := map[string]string{
-		filepath.Join(svc.Path, "eslint.config.js"): reactEslintConfigTemplate,
 		filepath.Join(svc.Path, "vitest.config.ts"): reactVitestConfigTemplate,
 	}
 	createdAny := false
@@ -639,7 +638,7 @@ func installServiceDependencies(cfg *core.Config) ([]string, error) {
 
 	installed := make(map[string]struct{})
 	for _, target := range targets {
-		if target.Archetype == "react" {
+		if usesPNPMInstallArchetype(target.Archetype) {
 			if err := runServicePNPMInstall(target.Dir, false); err != nil {
 				return nil, err
 			}
@@ -657,6 +656,15 @@ func installServiceDependencies(cfg *core.Config) ([]string, error) {
 	}
 	sort.Strings(names)
 	return names, nil
+}
+
+func usesPNPMInstallArchetype(archetype string) bool {
+	switch archetype {
+	case "react", "ts-ink", "ts-node", "ts-lib":
+		return true
+	default:
+		return false
+	}
 }
 
 func installPNPMDependencies(dir string, frozen bool) error {
@@ -701,36 +709,6 @@ func stringValue(v any) string {
 	s, _ := v.(string)
 	return s
 }
-
-const reactEslintConfigTemplate = `import js from "@eslint/js";
-import globals from "globals";
-import reactHooks from "eslint-plugin-react-hooks";
-import reactRefresh from "eslint-plugin-react-refresh";
-import tseslint from "typescript-eslint";
-
-export default tseslint.config(
-  { ignores: ["dist", "coverage"] },
-  {
-    extends: [js.configs.recommended, ...tseslint.configs.recommended],
-    files: ["**/*.{ts,tsx}"],
-    languageOptions: {
-      ecmaVersion: 2020,
-      globals: globals.browser,
-    },
-    plugins: {
-      "react-hooks": reactHooks,
-      "react-refresh": reactRefresh,
-    },
-    rules: {
-      ...reactHooks.configs.recommended.rules,
-      "react-refresh/only-export-components": [
-        "warn",
-        { allowConstantExport: true },
-      ],
-    },
-  },
-);
-`
 
 const reactVitestConfigTemplate = `import { defineConfig } from "vitest/config";
 import react from "@vitejs/plugin-react";

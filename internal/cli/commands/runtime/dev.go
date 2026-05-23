@@ -361,6 +361,10 @@ func defaultDevCommandForService(svc Service) (string, bool) {
 		return "go run github.com/air-verse/air@latest -c .air.toml", true
 	case "react":
 		return "pnpm dev", true
+	case "ts-ink":
+		return "pnpm dev", true
+	case "ts-node":
+		return "pnpm dev", true
 	default:
 		return "", false
 	}

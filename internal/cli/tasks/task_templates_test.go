@@ -53,10 +53,22 @@ func TestTaskTemplateCommandsAreIntentional(t *testing.T) {
   }
 }
 `)
+	writeFile(t, repo, filepath.Join("apps", "sonata", "package.json"), `{
+  "scripts": {
+    "build": "tsc -b",
+    "lint": "eslint .",
+    "typecheck": "tsc -b",
+    "test": "vitest run --passWithNoTests",
+    "audit": "pnpm audit --prod"
+  }
+}
+`)
 
 	goService := Service{Name: "api", Kind: "service", Archetype: "go"}
 	goPkg := Service{Name: "lib", Kind: "package", Archetype: "go"}
 	reactService := Service{Name: "web", Kind: "service", Archetype: "react", Path: "apps/web"}
+	tsNodeService := Service{Name: "sonata", Kind: "service", Archetype: "ts-node", Path: "apps/sonata"}
+	tsLibPackage := Service{Name: "core", Kind: "package", Archetype: "ts-lib", Path: "packages/core"}
 
 	cases := []struct {
 		svc  Service
@@ -69,6 +81,8 @@ func TestTaskTemplateCommandsAreIntentional(t *testing.T) {
 		{svc: goService, task: TaskAudit, want: "go tool govulncheck ./..."},
 		{svc: reactService, task: TaskTypecheck, want: "pnpm typecheck"},
 		{svc: reactService, task: TaskAudit, want: "pnpm audit"},
+		{svc: tsNodeService, task: TaskTypecheck, want: "pnpm typecheck"},
+		{svc: tsLibPackage, task: TaskBuild, want: "pnpm build"},
 	}
 
 	for _, tc := range cases {

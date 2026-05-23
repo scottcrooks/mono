@@ -45,7 +45,7 @@ func DependencyInstallTargetsForServices(cfg *Config, services []string) ([]Depe
 			continue
 		}
 
-		key := target.Archetype + "\x00" + filepath.Clean(target.Dir) + "\x00" + target.Command
+		key := filepath.Clean(target.Dir) + "\x00" + target.Command
 		existing, found := targetsByKey[key]
 		if !found {
 			copyTarget := target
@@ -171,7 +171,7 @@ func dependencyInstallTargetForService(svc Service) (DependencyInstallTarget, bo
 			Dir:       dir,
 			Command:   "go mod download",
 		}, true, nil
-	case "react":
+	case "react", "ts-ink", "ts-node", "ts-lib":
 		dir, ok, err := reactWorkspaceInstallDir(svc.Path)
 		if err != nil {
 			return DependencyInstallTarget{}, false, err
