@@ -13,6 +13,7 @@ type TaskRunOptions struct {
 	BaseRef      string
 	All          bool
 	BufferOutput bool
+	ContinueOnFailure bool
 }
 
 func parseTaskInvocationArgs(args []string, defaultConcurrency int) ([]string, TaskRunOptions, error) {

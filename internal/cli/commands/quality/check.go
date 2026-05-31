@@ -58,14 +58,14 @@ func (c *checkCLICommand) Run(args []string) error {
 	plan := buildPendingCheckPlan(cfg, targetServices)
 	aggregateSummary := tasks.TaskRunSummary{}
 	phaseCount := 0
+	var phaseErrCount int
 	for _, phase := range plan.Phases {
 		if len(phase.Services) == 0 {
 			continue
 		}
 
 		phaseCount++
-
-		results, _ := runCheckTaskPhase(cfg, TaskRequest{
+		results, phaseErr := runCheckTaskPhase(cfg, TaskRequest{
 			Task:          phase.Task,
 			Services:      phase.Services,
 			ExactServices: true,
@@ -74,9 +74,9 @@ func (c *checkCLICommand) Run(args []string) error {
 		aggregateSummary.Succeeded += phaseSummary.Succeeded
 		aggregateSummary.Failed += phaseSummary.Failed
 		aggregateSummary.Skipped += phaseSummary.Skipped
-		// if phaseErr != nil {
-		// 	return fmt.Errorf("check phase %q failed: %w", phase.Task, phaseErr)
-		// }
+		if phaseErr != nil {
+			phaseErrCount++
+		}
 	}
 
 	if phaseCount == 0 {
@@ -93,11 +93,14 @@ func (c *checkCLICommand) Run(args []string) error {
 		label = "services"
 	}
 	printer.Summary(fmt.Sprintf("Check complete: %s=%d phases=%d succeeded=%d failed=%d skipped=%d", label, len(plan.ImpactedServices), phaseCount, aggregateSummary.Succeeded, aggregateSummary.Failed, aggregateSummary.Skipped))
+	if phaseErrCount > 0 {
+		return fmt.Errorf("check failed: %d phase(s) had task failures", phaseErrCount)
+	}
 	return nil
 }
 
 func parseCheckArgs(args []string) (baseRef string, all bool, opts TaskRunOptions, err error) {
-	opts = TaskRunOptions{Concurrency: defaultTaskConcurrency(), BufferOutput: true}
+	opts = TaskRunOptions{Concurrency: defaultTaskConcurrency(), BufferOutput: true, ContinueOnFailure: true}
 	sawBase := false
 
 	for i := 0; i < len(args); i++ {

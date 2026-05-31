@@ -256,6 +256,45 @@ func TestTaskExecutorFailureSkipsRemaining(t *testing.T) {
 	}
 }
 
+func TestTaskExecutorContinueOnFailureRunsDependents(t *testing.T) {
+	repo := t.TempDir()
+	withWorkingDir(t, repo)
+	mustWrite(t, filepath.Join(repo, "a", "go.mod"), "module a\n\ngo 1.24\n")
+	mustWrite(t, filepath.Join(repo, "a", "a.go"), "package a\n")
+	mustWrite(t, filepath.Join(repo, "b", "go.mod"), "module b\n\ngo 1.24\n")
+	mustWrite(t, filepath.Join(repo, "b", "b.go"), "package b\n")
+
+	cfg := &Config{Services: []Service{
+		{Name: "a", Path: "a", Kind: "service", Archetype: "go"},
+		{Name: "b", Path: "b", Kind: "service", Archetype: "go", Depends: []string{"a"}},
+	}}
+	resolved := []ResolvedTaskNode{
+		{Node: TaskNode{Service: "a", Task: TaskBuild}, Service: cfg.Services[0], Command: "go definitely-not-a-command"},
+		{Node: TaskNode{Service: "b", Task: TaskBuild}, Service: cfg.Services[1], Command: "go version"},
+	}
+	graph, err := buildTaskGraph(cfg, resolved)
+	if err != nil {
+		t.Fatalf("buildTaskGraph: %v", err)
+	}
+
+	exec := newTaskExecutor()
+	results, err := exec.execute(context.Background(), graph, TaskRunOptions{NoCache: true, Concurrency: 2, ContinueOnFailure: true})
+	if err == nil {
+		t.Fatalf("expected execution error")
+	}
+
+	byNode := map[string]TaskRunResult{}
+	for _, r := range results {
+		byNode[r.Node.String()] = r
+	}
+	if byNode["a:build"].Status != TaskStatusFailed {
+		t.Fatalf("expected a to fail, got %+v", byNode["a:build"])
+	}
+	if byNode["b:build"].Status != TaskStatusSucceeded {
+		t.Fatalf("expected b to run despite failure, got %+v", byNode["b:build"])
+	}
+}
+
 func TestTaskExecutorDependencyChangeInvalidatesDependentCache(t *testing.T) {
 	repo := t.TempDir()
 	withWorkingDir(t, repo)

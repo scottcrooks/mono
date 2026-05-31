@@ -1,6 +1,7 @@
 package quality
 
 import (
+	"fmt"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -28,6 +29,9 @@ func TestParseCheckArgs(t *testing.T) {
 	}
 	if !opts.BufferOutput {
 		t.Fatalf("expected BufferOutput=true by default")
+	}
+	if !opts.ContinueOnFailure {
+		t.Fatalf("expected ContinueOnFailure=true by default")
 	}
 }
 
@@ -163,6 +167,60 @@ func TestCheckCommandPrintsSingleFinalSummary(t *testing.T) {
 		t.Fatalf("unexpected per-phase summary chatter: %q", stdout)
 	}
 	if !strings.Contains(stdout, "Check complete: impacted=2 phases=3 succeeded=4 failed=0 skipped=1") {
+		t.Fatalf("unexpected final summary: %q", stdout)
+	}
+}
+
+func TestCheckCommandReturnsErrorAfterRunningAllPhasesOnFailures(t *testing.T) {
+	repo := initCheckRepoWithFeatureChange(t)
+	withWorkingDir(t, repo)
+
+	original := runCheckDependencyInstalls
+	runCheckDependencyInstalls = func(_ *Config, services []string) ([]DependencyInstallResult, error) {
+		return nil, nil
+	}
+	t.Cleanup(func() {
+		runCheckDependencyInstalls = original
+	})
+
+	calls := make([]TaskName, 0, 3)
+	originalTask := runCheckTaskPhase
+	runCheckTaskPhase = func(_ *Config, req TaskRequest, opts TaskRunOptions) ([]TaskRunResult, error) {
+		calls = append(calls, req.Task)
+		if !opts.ContinueOnFailure {
+			t.Fatalf("expected ContinueOnFailure=true")
+		}
+		switch req.Task {
+		case TaskLint:
+			return []TaskRunResult{{Status: tasks.TaskStatusFailed}}, fmt.Errorf("lint failed")
+		case TaskTypecheck:
+			return []TaskRunResult{{Status: tasks.TaskStatusSucceeded}}, nil
+		case TaskTest:
+			return []TaskRunResult{{Status: tasks.TaskStatusFailed}}, fmt.Errorf("test failed")
+		default:
+			t.Fatalf("unexpected task: %s", req.Task)
+			return nil, nil
+		}
+	}
+	t.Cleanup(func() {
+		runCheckTaskPhase = originalTask
+	})
+
+	stdout := captureStdout(t, func() {
+		err := (&checkCLICommand{}).Run([]string{"mono", "check", "--base", "main"})
+		if err == nil {
+			t.Fatalf("expected check command to fail")
+		}
+		if !strings.Contains(err.Error(), "2 phase(s) had task failures") {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	})
+
+	wantCalls := []TaskName{TaskLint, TaskTypecheck, TaskTest}
+	if !reflect.DeepEqual(calls, wantCalls) {
+		t.Fatalf("expected all phases to run: got %+v want %+v", calls, wantCalls)
+	}
+	if !strings.Contains(stdout, "Check complete: impacted=2 phases=3 succeeded=1 failed=2 skipped=0") {
 		t.Fatalf("unexpected final summary: %q", stdout)
 	}
 }

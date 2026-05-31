@@ -191,7 +191,7 @@ func (e taskExecutor) execute(ctx context.Context, graph *taskGraph, opts TaskRu
 			}
 			if result.Status == TaskStatusFailed {
 				failed = true
-				if !continueOnFailure(result.Node.Task) {
+				if !opts.ContinueOnFailure && !continueOnFailure(result.Node.Task) {
 					continue
 				}
 			}
@@ -199,7 +199,7 @@ func (e taskExecutor) execute(ctx context.Context, graph *taskGraph, opts TaskRu
 				inDegree[next]--
 			}
 		}
-		if failed && !continueOnFailure(ready[0].Node.Task) {
+		if failed && !opts.ContinueOnFailure && !continueOnFailure(ready[0].Node.Task) {
 			for node := range remaining {
 				e.printer.StepWarn(node.String(), "skipped: blocked by earlier task failure")
 				result := TaskRunResult{Node: node, Status: TaskStatusSkipped, SkipReason: "blocked by earlier task failure"}
