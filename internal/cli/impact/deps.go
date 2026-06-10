@@ -12,6 +12,7 @@ type (
 )
 
 const (
+	TaskFormat    = tasks.TaskFormat
 	TaskLint      = tasks.TaskLint
 	TaskTypecheck = tasks.TaskTypecheck
 	TaskTest      = tasks.TaskTest

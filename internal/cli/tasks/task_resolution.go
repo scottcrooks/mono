@@ -2,7 +2,9 @@ package tasks
 
 import (
 	"fmt"
+	"path/filepath"
 	"sort"
+	"strings"
 )
 
 type TaskRequest struct {
@@ -10,13 +12,15 @@ type TaskRequest struct {
 	Services      []string
 	ExactServices bool
 	Integration   bool
+	FileTargets   map[string][]string
 }
 
 type ResolvedTaskNode struct {
-	Node       TaskNode
-	Service    Service
-	Command    string
-	SkipReason string
+	Node          TaskNode
+	Service       Service
+	Command       string
+	AffectedFiles []string
+	SkipReason    string
 }
 
 type TaskResolution struct {
@@ -42,6 +46,14 @@ func resolveTaskRequest(cfg *Config, req TaskRequest) (*TaskResolution, error) {
 		}
 		if cmd, ok, reason := TaskCommandForServiceWithOptions(svc, req.Task, req.Integration); ok {
 			node.Command = cmd
+			if req.Task == TaskFormat && req.FileTargets != nil {
+				files := formatTargetsForService(svc, req.FileTargets[svc.Name])
+				if len(files) == 0 {
+					node.SkipReason = "no changed files"
+				} else {
+					node.AffectedFiles = files
+				}
+			}
 		} else {
 			node.SkipReason = reason
 		}
@@ -53,6 +65,42 @@ func resolveTaskRequest(cfg *Config, req TaskRequest) (*TaskResolution, error) {
 	})
 
 	return &TaskResolution{Task: req.Task, Nodes: nodes}, nil
+}
+
+func formatTargetsForService(svc Service, files []string) []string {
+	if len(files) == 0 {
+		return nil
+	}
+
+	prefix := normalizeTaskServicePath(svc.Path)
+	targets := make([]string, 0, len(files))
+	for _, file := range files {
+		normalized := filepath.ToSlash(strings.TrimSpace(file))
+		if normalized == "" {
+			continue
+		}
+		if prefix != "" {
+			if normalized == prefix {
+				continue
+			}
+			if strings.HasPrefix(normalized, prefix+"/") {
+				normalized = strings.TrimPrefix(normalized, prefix+"/")
+			}
+		}
+		if normalized != "" {
+			targets = append(targets, normalized)
+		}
+	}
+	sort.Strings(targets)
+	return targets
+}
+
+func normalizeTaskServicePath(path string) string {
+	path = filepath.ToSlash(path)
+	path = strings.TrimSpace(path)
+	path = strings.TrimPrefix(path, "./")
+	path = strings.Trim(path, "/")
+	return path
 }
 
 func selectServicesForRequest(cfg *Config, requested []string, exact bool) ([]Service, error) {

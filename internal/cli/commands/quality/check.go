@@ -55,6 +55,11 @@ func (c *checkCLICommand) Run(args []string) error {
 		printDependencyInstallSummary(installResults)
 	}
 
+	formatTargets, err := buildChangedFilesByService(cfg, baseRef)
+	if err != nil {
+		return fmt.Errorf("building changed file targets: %w", err)
+	}
+
 	plan := buildPendingCheckPlan(cfg, targetServices)
 	aggregateSummary := tasks.TaskRunSummary{}
 	phaseCount := 0
@@ -65,11 +70,15 @@ func (c *checkCLICommand) Run(args []string) error {
 		}
 
 		phaseCount++
-		results, phaseErr := runCheckTaskPhase(cfg, TaskRequest{
+		req := TaskRequest{
 			Task:          phase.Task,
 			Services:      phase.Services,
 			ExactServices: true,
-		}, opts)
+		}
+		if phase.Task == TaskFormat {
+			req.FileTargets = formatTargets
+		}
+		results, phaseErr := runCheckTaskPhase(cfg, req, opts)
 		phaseSummary := tasks.SummarizeTaskResults(results)
 		aggregateSummary.Succeeded += phaseSummary.Succeeded
 		aggregateSummary.Failed += phaseSummary.Failed

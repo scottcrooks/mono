@@ -205,11 +205,13 @@ func TestEnsureReactServiceDefaultsAddsMissingScripts(t *testing.T) {
 	pkg := readPackageJSON(t, filepath.Join(svcPath, "package.json"))
 	scripts := pkg["scripts"].(map[string]any)
 	assertScript(t, scripts, "build", "tsc -b && vite build")
+	assertScript(t, scripts, "format", "prettier --write .")
 	assertScript(t, scripts, "lint", "eslint .")
 	assertScript(t, scripts, "typecheck", "tsc -b")
 	assertScript(t, scripts, "test", "vitest run --passWithNoTests")
 	assertScript(t, scripts, "audit", "pnpm audit --prod")
 	assertScript(t, pkg["devDependencies"].(map[string]any), "eslint", "^9.18.0")
+	assertScript(t, pkg["devDependencies"].(map[string]any), "prettier", "^3.6.0")
 	assertScript(t, pkg["devDependencies"].(map[string]any), "vitest", "^3.0.0")
 	assertFileContains(t, filepath.Join(svcPath, "vitest.config.ts"), `passWithNoTests: true`)
 	if _, statErr := os.Stat(filepath.Join(svcPath, "eslint.config.js")); !os.IsNotExist(statErr) {
@@ -258,6 +260,7 @@ func TestEnsureReactServiceDefaultsPreservesExistingScripts(t *testing.T) {
 
 	pkg := readPackageJSON(t, filepath.Join(svcPath, "package.json"))
 	scripts := pkg["scripts"].(map[string]any)
+	assertScript(t, scripts, "format", "prettier --write .")
 	assertScript(t, scripts, "lint", "biome check .")
 	assertScript(t, scripts, "test", "custom-test")
 	assertScript(t, scripts, "typecheck", "tsc -b")
@@ -271,6 +274,7 @@ func TestEnsureReactServiceDefaultsNoopWhenAlreadyConfigured(t *testing.T) {
   "name": "web",
   "private": true,
   "scripts": {
+    "format": "prettier --write .",
     "lint": "eslint .",
     "typecheck": "tsc -b",
     "test": "vitest run --passWithNoTests",
@@ -283,6 +287,7 @@ func TestEnsureReactServiceDefaultsNoopWhenAlreadyConfigured(t *testing.T) {
     "eslint-plugin-react-refresh": "^0.4.18",
     "globals": "^15.14.0",
     "jsdom": "^25.0.0",
+    "prettier": "^3.6.0",
     "typescript-eslint": "^8.20.0",
     "vitest": "^3.0.0"
   }
@@ -322,6 +327,79 @@ func TestEnsureReactServiceDefaultsNoopWhenAlreadyConfigured(t *testing.T) {
 	}
 	if string(got) != original {
 		t.Fatalf("package.json changed unexpectedly: %q", string(got))
+	}
+}
+
+func TestEnsureTypeScriptFormatDefaultsAddsMissingFormatForTSNodeAndTSLib(t *testing.T) {
+	tests := []struct {
+		name      string
+		svc       core.Service
+		pkgDir    string
+		pkgJSON   string
+		configRel string
+	}{
+		{
+			name:   "ts-node",
+			svc:    core.Service{Name: "daemon", Path: "apps/daemon", Archetype: "ts-node"},
+			pkgDir: filepath.Join("apps", "daemon"),
+			pkgJSON: `{
+  "name": "daemon",
+  "private": true,
+  "scripts": {
+    "test": "vitest run"
+  }
+}
+`,
+			configRel: filepath.Join("apps", "daemon", "vitest.config.ts"),
+		},
+		{
+			name:   "ts-lib",
+			svc:    core.Service{Name: "core", Path: "packages/core", Archetype: "ts-lib", Kind: "package"},
+			pkgDir: filepath.Join("packages", "core"),
+			pkgJSON: `{
+  "name": "core",
+  "private": true
+}
+`,
+			configRel: filepath.Join("packages", "core", "vitest.config.ts"),
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			repo := t.TempDir()
+			svcPath := filepath.Join(repo, tt.pkgDir)
+			mustMkdirAll(t, svcPath)
+			mustWrite(t, filepath.Join(svcPath, "package.json"), tt.pkgJSON)
+
+			prev, err := os.Getwd()
+			if err != nil {
+				t.Fatalf("getwd: %v", err)
+			}
+			t.Cleanup(func() {
+				if chdirErr := os.Chdir(prev); chdirErr != nil {
+					t.Fatalf("restore working dir: %v", chdirErr)
+				}
+			})
+			if err := os.Chdir(repo); err != nil {
+				t.Fatalf("chdir repo: %v", err)
+			}
+
+			changed, err := ensureTypeScriptFormatDefaults(tt.svc)
+			if err != nil {
+				t.Fatalf("ensureTypeScriptFormatDefaults returned error: %v", err)
+			}
+			if !changed {
+				t.Fatal("expected package.json to be updated")
+			}
+
+			pkg := readPackageJSON(t, filepath.Join(svcPath, "package.json"))
+			assertScript(t, pkg["scripts"].(map[string]any), "format", "prettier --write .")
+			assertScript(t, pkg["devDependencies"].(map[string]any), "prettier", "^3.6.0")
+			if _, statErr := os.Stat(filepath.Join(repo, tt.configRel)); !os.IsNotExist(statErr) {
+				t.Fatalf("expected no config files to be created, got err=%v", statErr)
+			}
+		})
 	}
 }
 

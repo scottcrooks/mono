@@ -205,8 +205,11 @@ func TestBuildCheckTaskPreview(t *testing.T) {
 		t.Fatalf("expected 2 rows, got %d", len(rows))
 	}
 
-	if rows[0].Service != "api" || strings.Join(rows[0].Present, ",") != "lint,typecheck,test" {
+	if rows[0].Service != "api" || strings.Join(rows[0].Present, ",") != "format,lint,typecheck,test" {
 		t.Fatalf("unexpected first row: %+v", rows[0])
+	}
+	if len(rows[0].Missing) != 0 {
+		t.Fatalf("expected no missing tasks for api: %+v", rows[0])
 	}
 	if rows[1].Service != "lib" || strings.Join(rows[1].Missing, ",") != "typecheck" {
 		t.Fatalf("unexpected second row: %+v", rows[1])
@@ -228,16 +231,40 @@ func TestBuildPendingCheckPlan(t *testing.T) {
 		t.Fatalf("unexpected impacted services: %v", plan.ImpactedServices)
 	}
 
-	if len(plan.Phases) != 3 {
-		t.Fatalf("expected 3 phases, got %d", len(plan.Phases))
+	if len(plan.Phases) != 4 {
+		t.Fatalf("expected 4 phases, got %d", len(plan.Phases))
 	}
-	if plan.Phases[0].Task != TaskLint || !reflect.DeepEqual(plan.Phases[0].Services, []string{"api", "lib"}) {
-		t.Fatalf("unexpected lint phase: %+v", plan.Phases[0])
+	if plan.Phases[0].Task != TaskFormat || !reflect.DeepEqual(plan.Phases[0].Services, []string{"api", "lib"}) {
+		t.Fatalf("unexpected format phase: %+v", plan.Phases[0])
 	}
-	if plan.Phases[1].Task != TaskTypecheck || !reflect.DeepEqual(plan.Phases[1].Services, []string{"api"}) {
-		t.Fatalf("unexpected typecheck phase: %+v", plan.Phases[1])
+	if plan.Phases[1].Task != TaskLint || !reflect.DeepEqual(plan.Phases[1].Services, []string{"api", "lib"}) {
+		t.Fatalf("unexpected lint phase: %+v", plan.Phases[1])
 	}
-	if plan.Phases[2].Task != TaskTest || !reflect.DeepEqual(plan.Phases[2].Services, []string{"api", "lib"}) {
-		t.Fatalf("unexpected test phase: %+v", plan.Phases[2])
+	if plan.Phases[2].Task != TaskTypecheck || !reflect.DeepEqual(plan.Phases[2].Services, []string{"api"}) {
+		t.Fatalf("unexpected typecheck phase: %+v", plan.Phases[2])
+	}
+	if plan.Phases[3].Task != TaskTest || !reflect.DeepEqual(plan.Phases[3].Services, []string{"api", "lib"}) {
+		t.Fatalf("unexpected test phase: %+v", plan.Phases[3])
+	}
+}
+
+func TestBuildChangedFilesByService(t *testing.T) {
+	repo := initImpactRepoWithFeatureChange(t)
+	withWorkingDir(t, repo)
+
+	cfg, err := loadConfig()
+	if err != nil {
+		t.Fatalf("loadConfig returned error: %v", err)
+	}
+
+	filesByService, err := BuildChangedFilesByService(cfg, "main")
+	if err != nil {
+		t.Fatalf("BuildChangedFilesByService returned error: %v", err)
+	}
+
+	if !reflect.DeepEqual(filesByService, map[string][]string{
+		"lib": []string{"lib.go"},
+	}) {
+		t.Fatalf("unexpected changed files by service: %+v", filesByService)
 	}
 }

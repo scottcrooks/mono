@@ -33,6 +33,7 @@ type (
 )
 
 const (
+	TaskFormat    = tasks.TaskFormat
 	TaskLint      = tasks.TaskLint
 	TaskTypecheck = tasks.TaskTypecheck
 	TaskTest      = tasks.TaskTest
@@ -58,6 +59,10 @@ func loadConfig() (*core.Config, error) { return core.LoadConfig() }
 
 func buildImpactReport(cfg *core.Config, baseRef string, explain bool) (*impact.ImpactReport, error) {
 	return impact.BuildImpactReport(cfg, baseRef, explain)
+}
+
+func buildChangedFilesByService(cfg *core.Config, baseRef string) (map[string][]string, error) {
+	return impact.BuildChangedFilesByService(cfg, baseRef)
 }
 
 func buildPendingCheckPlan(cfg *core.Config, impacted []string) impact.PendingCheckPlan {

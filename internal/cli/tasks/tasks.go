@@ -11,6 +11,7 @@ type TaskName string
 
 const (
 	TaskBuild     TaskName = "build"
+	TaskFormat    TaskName = "format"
 	TaskLint      TaskName = "lint"
 	TaskTypecheck TaskName = "typecheck"
 	TaskTest      TaskName = "test"
@@ -21,6 +22,7 @@ const (
 
 var orchestratedTaskOrder = []TaskName{
 	TaskBuild,
+	TaskFormat,
 	TaskLint,
 	TaskTypecheck,
 	TaskTest,
@@ -31,6 +33,7 @@ var orchestratedTaskOrder = []TaskName{
 
 var orchestratedTaskSet = map[TaskName]struct{}{
 	TaskBuild:     {},
+	TaskFormat:    {},
 	TaskLint:      {},
 	TaskTypecheck: {},
 	TaskTest:      {},

@@ -203,7 +203,7 @@ func (c *doctorCommand) Run(_ []string) error {
 				} else {
 					sort.Strings(updated)
 					for _, svc := range updated {
-						p.Summary(fmt.Sprintf("  Updated React scripts for %s", svc))
+						p.Summary(fmt.Sprintf("  Updated service task defaults for %s", svc))
 					}
 					p.StepOK("doctor", fmt.Sprintf("Configured service task defaults for %d service(s)", len(updated)))
 				}
@@ -498,11 +498,20 @@ func fileExists(path string) bool {
 func ensureServiceTaskDefaults(cfg *core.Config) ([]string, error) {
 	updated := make([]string, 0)
 	for _, svc := range cfg.Services {
-		if svc.Archetype != "react" || strings.TrimSpace(svc.Path) == "" {
+		if strings.TrimSpace(svc.Path) == "" {
 			continue
 		}
 
-		changed, err := ensureReactServiceDefaults(svc)
+		changed := false
+		var err error
+		switch svc.Archetype {
+		case "react":
+			changed, err = ensureReactServiceDefaults(svc)
+		case "ts-node", "ts-lib":
+			changed, err = ensureTypeScriptFormatDefaults(svc)
+		default:
+			continue
+		}
 		if err != nil {
 			return nil, fmt.Errorf("%s: %w", svc.Name, err)
 		}
@@ -576,6 +585,7 @@ func ensureReactServiceDefaults(svc core.Service) (bool, error) {
 func defaultReactScripts() map[string]string {
 	return map[string]string{
 		"audit":     "pnpm audit --prod",
+		"format":    "prettier --write .",
 		"lint":      "eslint .",
 		"test":      "vitest run --passWithNoTests",
 		"typecheck": "tsc -b",
@@ -590,9 +600,57 @@ func defaultReactDevDependencies() map[string]string {
 		"eslint-plugin-react-refresh": "^0.4.18",
 		"globals":                     "^15.14.0",
 		"jsdom":                       "^25.0.0",
+		"prettier":                    "^3.6.0",
 		"typescript-eslint":           "^8.20.0",
 		"vitest":                      "^3.0.0",
 	}
+}
+
+func ensureTypeScriptFormatDefaults(svc core.Service) (bool, error) {
+	pkgPath := filepath.Join(svc.Path, "package.json")
+	data, err := os.ReadFile(pkgPath)
+	if err != nil {
+		return false, fmt.Errorf("read %s: %w", pkgPath, err)
+	}
+
+	var pkg map[string]any
+	if err := json.Unmarshal(data, &pkg); err != nil {
+		return false, fmt.Errorf("parse %s: %w", pkgPath, err)
+	}
+
+	scripts := jsonObjectMap(pkg["scripts"])
+	if scripts == nil {
+		scripts = map[string]any{}
+	}
+	devDependencies := jsonObjectMap(pkg["devDependencies"])
+	if devDependencies == nil {
+		devDependencies = map[string]any{}
+	}
+
+	changed := false
+	if strings.TrimSpace(stringValue(scripts["format"])) == "" {
+		scripts["format"] = "prettier --write ."
+		changed = true
+	}
+	if strings.TrimSpace(stringValue(devDependencies["prettier"])) == "" {
+		devDependencies["prettier"] = "^3.6.0"
+		changed = true
+	}
+	if !changed {
+		return false, nil
+	}
+
+	pkg["scripts"] = scripts
+	pkg["devDependencies"] = devDependencies
+	formatted, err := json.MarshalIndent(pkg, "", "  ")
+	if err != nil {
+		return false, fmt.Errorf("marshal %s: %w", pkgPath, err)
+	}
+	formatted = append(formatted, '\n')
+	if err := os.WriteFile(pkgPath, formatted, 0o644); err != nil {
+		return false, fmt.Errorf("write %s: %w", pkgPath, err)
+	}
+	return true, nil
 }
 
 func ensureReactConfigFiles(svc core.Service) (bool, error) {

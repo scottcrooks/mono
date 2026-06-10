@@ -23,8 +23,8 @@ func TestStatusCommand(t *testing.T) {
 		"  - lib",
 		"  - web",
 		"Planned check tasks:",
-		"  - api: run [lint, typecheck, test], skip [none]",
-		"  - lib: run [lint, test], skip [typecheck]",
+		"  - api: run [format, lint, typecheck, test], skip [none]",
+		"  - lib: run [format, lint, test], skip [typecheck]",
 	}
 	for _, snippet := range requiredSnippets {
 		if !strings.Contains(stdout, snippet) {
