@@ -90,3 +90,58 @@ func TestResolveTaskRequestExactServicesSkipsDependencyClosure(t *testing.T) {
 		t.Fatalf("expected only api in exact mode, got %+v", resolved.Nodes)
 	}
 }
+
+func TestResolveTaskRequestFormatUsesFileTargets(t *testing.T) {
+	t.Parallel()
+
+	cfg := &Config{Services: []Service{
+		{Name: "api", Path: "apps/api", Kind: "service", Archetype: "go"},
+		{Name: "web", Path: "apps/web", Kind: "service", Archetype: "go"},
+	}}
+
+	resolved, err := resolveTaskRequest(cfg, TaskRequest{
+		Task:          TaskFormat,
+		Services:      []string{"api", "web"},
+		ExactServices: true,
+		FileTargets: map[string][]string{
+			"api": []string{"apps/api/main.go", "apps/api/util.go"},
+			"web": []string{"apps/web/web.go"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("resolveTaskRequest error: %v", err)
+	}
+	if len(resolved.Nodes) != 2 {
+		t.Fatalf("expected two nodes, got %+v", resolved.Nodes)
+	}
+	if got := resolved.Nodes[0].AffectedFiles; len(got) != 2 || got[0] != "main.go" || got[1] != "util.go" {
+		t.Fatalf("unexpected api affected files: %+v", got)
+	}
+	if got := resolved.Nodes[1].AffectedFiles; len(got) != 1 || got[0] != "web.go" {
+		t.Fatalf("unexpected web affected files: %+v", got)
+	}
+}
+
+func TestResolveTaskRequestFormatSkipsWithoutFiles(t *testing.T) {
+	t.Parallel()
+
+	cfg := &Config{Services: []Service{
+		{Name: "api", Path: "apps/api", Kind: "service", Archetype: "go"},
+	}}
+
+	resolved, err := resolveTaskRequest(cfg, TaskRequest{
+		Task:          TaskFormat,
+		Services:      []string{"api"},
+		ExactServices: true,
+		FileTargets:   map[string][]string{},
+	})
+	if err != nil {
+		t.Fatalf("resolveTaskRequest error: %v", err)
+	}
+	if len(resolved.Nodes) != 1 {
+		t.Fatalf("expected one node, got %+v", resolved.Nodes)
+	}
+	if resolved.Nodes[0].SkipReason != "no changed files" {
+		t.Fatalf("expected no-changed-files skip reason, got %+v", resolved.Nodes[0])
+	}
+}

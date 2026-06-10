@@ -148,10 +148,11 @@ func (e taskExecutor) execute(ctx context.Context, graph *taskGraph, opts TaskRu
 		preFailed := false
 		for _, resolved := range ready {
 			node := resolved.Node
+			cmdString := commandForExecution(resolved.Service, node, resolved.Command, resolved.AffectedFiles, opts)
 			baseKey := ""
 			if taskUsesCache(node.Task) {
 				var err error
-				baseKey, err = buildTaskCacheKey(resolved.Service, node.Task, resolved.Command)
+				baseKey, err = buildTaskCacheKey(resolved.Service, node.Task, cmdString)
 				if err != nil {
 					preBatch = append(preBatch, TaskRunResult{Node: node, Status: TaskStatusFailed, Err: err})
 					preFailed = true
@@ -262,8 +263,8 @@ func (e taskExecutor) runNode(ctx context.Context, task readyTask, opts TaskRunO
 		stdoutWriter = stdoutCapture
 		stderrWriter = stderrCapture
 	}
+	cmdString := commandForExecution(task.resolved.Service, node, task.resolved.Command, task.resolved.AffectedFiles, opts)
 	if !taskUsesCache(node.Task) {
-		cmdString := commandForExecution(task.resolved.Service, node, task.resolved.Command, opts)
 		if err := runTaskCommand(ctx, printer, task.resolved.Service, node, cmdString, stdoutWriter, stderrWriter); err != nil {
 			e.replayTaskTranscript(stdoutCapture, stderrCapture)
 			return TaskRunResult{Node: node, Status: TaskStatusFailed, Err: err}
@@ -284,7 +285,6 @@ func (e taskExecutor) runNode(ctx context.Context, task readyTask, opts TaskRunO
 		printer.StepWarn(node.String(), "cache miss: "+reason)
 	}
 
-	cmdString := commandForExecution(task.resolved.Service, node, task.resolved.Command, opts)
 	if err := runTaskCommand(ctx, printer, task.resolved.Service, node, cmdString, stdoutWriter, stderrWriter); err != nil {
 		e.replayTaskTranscript(stdoutCapture, stderrCapture)
 		return TaskRunResult{Node: node, Status: TaskStatusFailed, Err: err}
@@ -320,18 +320,36 @@ func continueOnFailure(task TaskName) bool {
 	return task == TaskAudit
 }
 
-func commandForExecution(svc Service, node TaskNode, command string, opts TaskRunOptions) string {
+func commandForExecution(svc Service, node TaskNode, command string, affectedFiles []string, opts TaskRunOptions) string {
+	trimmed := strings.TrimSpace(command)
+	trimmed = appendFormatFilesToCommand(svc, node, trimmed, affectedFiles)
 	if !opts.NoCache {
-		return command
+		return trimmed
 	}
 	if node.Task != TaskTest || svc.Archetype != "go" {
-		return command
+		return trimmed
 	}
-	trimmed := strings.TrimSpace(command)
 	if !strings.HasPrefix(trimmed, "go test") || strings.Contains(trimmed, "-count=") {
-		return command
+		return trimmed
 	}
 	return trimmed + " -count=1"
+}
+
+func appendFormatFilesToCommand(svc Service, node TaskNode, command string, affectedFiles []string) string {
+	if node.Task != TaskFormat || len(affectedFiles) == 0 {
+		return command
+	}
+
+	files := append([]string(nil), affectedFiles...)
+	sort.Strings(files)
+	switch svc.Archetype {
+	case "go":
+		return command + " " + strings.Join(files, " ")
+	case "react", "ts-ink", "ts-node", "ts-lib":
+		return command + " -- " + strings.Join(files, " ")
+	default:
+		return command
+	}
 }
 
 func composeExecutionCacheKey(baseKey string, dependencyKeys []string) string {

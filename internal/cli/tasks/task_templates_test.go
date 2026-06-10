@@ -29,6 +29,12 @@ func TestTaskTemplatesServiceVsPackage(t *testing.T) {
 	if _, ok, _ := TaskCommandForService(pkg, TaskAudit); !ok {
 		t.Fatalf("expected go package to support audit")
 	}
+	if _, ok, _ := TaskCommandForService(service, TaskFormat); !ok {
+		t.Fatalf("expected go service to support format")
+	}
+	if _, ok, _ := TaskCommandForService(pkg, TaskFormat); !ok {
+		t.Fatalf("expected go package to support format")
+	}
 	if _, ok, _ := TaskCommandForService(service, TaskDeploy); ok {
 		t.Fatalf("expected go service to skip deploy until deploy template exists")
 	}
@@ -48,6 +54,7 @@ func TestTaskTemplateCommandsAreIntentional(t *testing.T) {
 	withWorkingDir(t, repo)
 	writeFile(t, repo, filepath.Join("apps", "web", "package.json"), `{
   "scripts": {
+    "format": "prettier --write .",
     "typecheck": "tsc --noEmit",
     "audit": "pnpm audit"
   }
@@ -76,13 +83,18 @@ func TestTaskTemplateCommandsAreIntentional(t *testing.T) {
 		want string
 	}{
 		{svc: goService, task: TaskLint, want: "go tool golangci-lint run ./..."},
+		{svc: goService, task: TaskFormat, want: "gofmt -w"},
 		{svc: goService, task: TaskTypecheck, want: "go test -run=^$ ./..."},
 		{svc: goPkg, task: TaskLint, want: "go tool golangci-lint run ./..."},
+		{svc: goPkg, task: TaskFormat, want: "gofmt -w"},
 		{svc: goService, task: TaskAudit, want: "go tool govulncheck ./..."},
+		{svc: reactService, task: TaskFormat, want: "pnpm format"},
 		{svc: reactService, task: TaskTypecheck, want: "pnpm typecheck"},
 		{svc: reactService, task: TaskAudit, want: "pnpm audit"},
+		{svc: tsNodeService, task: TaskFormat, want: "pnpm format"},
 		{svc: tsNodeService, task: TaskTypecheck, want: "pnpm typecheck"},
 		{svc: tsLibPackage, task: TaskBuild, want: "pnpm build"},
+		{svc: tsLibPackage, task: TaskFormat, want: "pnpm format"},
 	}
 
 	for _, tc := range cases {
@@ -102,6 +114,7 @@ func TestReactTaskSupportRequiresScript(t *testing.T) {
 
 	writeFile(t, repo, filepath.Join("apps", "web", "package.json"), `{
   "scripts": {
+    "format": "prettier --write .",
     "lint": "eslint ."
   }
 }
@@ -111,6 +124,9 @@ func TestReactTaskSupportRequiresScript(t *testing.T) {
 
 	if _, ok, _ := TaskCommandForService(reactService, TaskLint); !ok {
 		t.Fatalf("expected lint to be supported when script exists")
+	}
+	if _, ok, _ := TaskCommandForService(reactService, TaskFormat); !ok {
+		t.Fatalf("expected format to be supported when script exists")
 	}
 	if _, ok, reason := TaskCommandForService(reactService, TaskTypecheck); ok {
 		t.Fatalf("expected typecheck to be skipped when script is missing")

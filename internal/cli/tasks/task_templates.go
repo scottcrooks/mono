@@ -18,6 +18,7 @@ var taskTemplates = map[string]archetypeTemplate{
 	"go": {
 		serviceTasks: map[TaskName]string{
 			TaskBuild:     "go build ./...",
+			TaskFormat:    "gofmt -w",
 			TaskLint:      "go tool golangci-lint run ./...",
 			TaskTypecheck: "go test -run=^$ ./...",
 			TaskTest:      "go test ./...",
@@ -25,15 +26,17 @@ var taskTemplates = map[string]archetypeTemplate{
 			TaskPackage:   "go build ./...",
 		},
 		packageTasks: map[TaskName]string{
-			TaskBuild: "go build ./...",
-			TaskLint:  "go tool golangci-lint run ./...",
-			TaskTest:  "go test ./...",
-			TaskAudit: "go tool govulncheck ./...",
+			TaskBuild:  "go build ./...",
+			TaskFormat: "gofmt -w",
+			TaskLint:   "go tool golangci-lint run ./...",
+			TaskTest:   "go test ./...",
+			TaskAudit:  "go tool govulncheck ./...",
 		},
 	},
 	"react": {
 		serviceTasks: map[TaskName]string{
 			TaskBuild:     "pnpm build",
+			TaskFormat:    "pnpm format",
 			TaskLint:      "pnpm lint",
 			TaskTypecheck: "pnpm typecheck",
 			TaskTest:      "pnpm test",
@@ -42,6 +45,7 @@ var taskTemplates = map[string]archetypeTemplate{
 		},
 		packageTasks: map[TaskName]string{
 			TaskBuild:     "pnpm build",
+			TaskFormat:    "pnpm format",
 			TaskLint:      "pnpm lint",
 			TaskTypecheck: "pnpm typecheck",
 			TaskTest:      "pnpm test",
@@ -51,6 +55,7 @@ var taskTemplates = map[string]archetypeTemplate{
 	"ts-ink": {
 		serviceTasks: map[TaskName]string{
 			TaskBuild:     "pnpm build",
+			TaskFormat:    "pnpm format",
 			TaskLint:      "pnpm lint",
 			TaskTypecheck: "pnpm typecheck",
 			TaskTest:      "pnpm test",
@@ -59,6 +64,7 @@ var taskTemplates = map[string]archetypeTemplate{
 		},
 		packageTasks: map[TaskName]string{
 			TaskBuild:     "pnpm build",
+			TaskFormat:    "pnpm format",
 			TaskLint:      "pnpm lint",
 			TaskTypecheck: "pnpm typecheck",
 			TaskTest:      "pnpm test",
@@ -68,6 +74,7 @@ var taskTemplates = map[string]archetypeTemplate{
 	"ts-node": {
 		serviceTasks: map[TaskName]string{
 			TaskBuild:     "pnpm build",
+			TaskFormat:    "pnpm format",
 			TaskLint:      "pnpm lint",
 			TaskTypecheck: "pnpm typecheck",
 			TaskTest:      "pnpm test",
@@ -76,6 +83,7 @@ var taskTemplates = map[string]archetypeTemplate{
 		},
 		packageTasks: map[TaskName]string{
 			TaskBuild:     "pnpm build",
+			TaskFormat:    "pnpm format",
 			TaskLint:      "pnpm lint",
 			TaskTypecheck: "pnpm typecheck",
 			TaskTest:      "pnpm test",
@@ -85,6 +93,7 @@ var taskTemplates = map[string]archetypeTemplate{
 	"ts-lib": {
 		serviceTasks: map[TaskName]string{
 			TaskBuild:     "pnpm build",
+			TaskFormat:    "pnpm format",
 			TaskLint:      "pnpm lint",
 			TaskTypecheck: "pnpm typecheck",
 			TaskTest:      "pnpm test",
@@ -93,6 +102,7 @@ var taskTemplates = map[string]archetypeTemplate{
 		},
 		packageTasks: map[TaskName]string{
 			TaskBuild:     "pnpm build",
+			TaskFormat:    "pnpm format",
 			TaskLint:      "pnpm lint",
 			TaskTypecheck: "pnpm typecheck",
 			TaskTest:      "pnpm test",
@@ -166,6 +176,8 @@ func reactScriptForTask(task TaskName) string {
 	switch task {
 	case TaskBuild:
 		return "build"
+	case TaskFormat:
+		return "format"
 	case TaskLint:
 		return "lint"
 	case TaskTypecheck:

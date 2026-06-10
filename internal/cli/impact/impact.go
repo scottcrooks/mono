@@ -114,6 +114,20 @@ func changedFiles(baseRef string) ([]string, error) {
 	return files, nil
 }
 
+func BuildChangedFilesByService(cfg *Config, baseFlag string) (map[string][]string, error) {
+	baseRef, err := resolveBaseRef(baseFlag)
+	if err != nil {
+		return nil, err
+	}
+
+	files, err := changedFiles(baseRef)
+	if err != nil {
+		return nil, err
+	}
+
+	return mapChangedFilesByService(cfg, files), nil
+}
+
 func gitNameOnlyDiff(refRange string) ([]string, error) {
 	out, err := gitOutput("diff", "--name-only", refRange)
 	if err != nil {
@@ -169,6 +183,29 @@ func mapFilesToChangedServices(cfg *Config, files []string) []string {
 	return sortedKeys(changed)
 }
 
+func mapChangedFilesByService(cfg *Config, files []string) map[string][]string {
+	out := make(map[string][]string)
+	for _, file := range files {
+		service := owningService(cfg, file)
+		if service == "" {
+			continue
+		}
+		svc := findService(cfg, service)
+		if svc == nil {
+			continue
+		}
+		rel := relativeServiceFile(svc.Path, file)
+		if rel == "" {
+			continue
+		}
+		out[service] = append(out[service], rel)
+	}
+	for service := range out {
+		sort.Strings(out[service])
+	}
+	return out
+}
+
 func owningService(cfg *Config, file string) string {
 	file = filepath.ToSlash(file)
 
@@ -195,6 +232,21 @@ func normalizeServicePath(path string) string {
 	path = strings.TrimPrefix(path, "./")
 	path = strings.Trim(path, "/")
 	return path
+}
+
+func relativeServiceFile(servicePath, file string) string {
+	prefix := normalizeServicePath(servicePath)
+	normalized := filepath.ToSlash(file)
+	if prefix == "" {
+		return normalized
+	}
+	if normalized == prefix {
+		return ""
+	}
+	if strings.HasPrefix(normalized, prefix+"/") {
+		return strings.TrimPrefix(normalized, prefix+"/")
+	}
+	return normalized
 }
 
 func buildReverseDeps(cfg *Config) map[string][]string {
@@ -272,7 +324,7 @@ func computeExplainChains(changed []string, reverse map[string][]string) map[str
 }
 
 func BuildCheckTaskPreview(cfg *Config, impacted []string) []CheckTaskPreview {
-	required := []string{"lint", "typecheck", "test"}
+	required := []string{"format", "lint", "typecheck", "test"}
 	rows := make([]CheckTaskPreview, 0, len(impacted))
 	for _, name := range impacted {
 		svc := findService(cfg, name)
@@ -302,8 +354,9 @@ func BuildCheckTaskPreview(cfg *Config, impacted []string) []CheckTaskPreview {
 func BuildPendingCheckPlan(cfg *Config, impacted []string) PendingCheckPlan {
 	preview := BuildCheckTaskPreview(cfg, impacted)
 
-	phaseTasks := []TaskName{TaskLint, TaskTypecheck, TaskTest}
+	phaseTasks := []TaskName{TaskFormat, TaskLint, TaskTypecheck, TaskTest}
 	phaseServices := map[TaskName][]string{
+		TaskFormat:    {},
 		TaskLint:      {},
 		TaskTypecheck: {},
 		TaskTest:      {},
