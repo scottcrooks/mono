@@ -35,8 +35,32 @@ func TestTaskTemplatesServiceVsPackage(t *testing.T) {
 	if _, ok, _ := TaskCommandForService(pkg, TaskFormat); !ok {
 		t.Fatalf("expected go package to support format")
 	}
+	if command, ok, _ := TaskCommandForService(service, TaskFix); !ok || command != "go fix ./..." {
+		t.Fatalf("expected go service to support internal fix, got %q supported=%v", command, ok)
+	}
+	if command, ok, _ := TaskCommandForService(pkg, TaskFix); !ok || command != "go fix ./..." {
+		t.Fatalf("expected go package to support internal fix, got %q supported=%v", command, ok)
+	}
 	if _, ok, _ := TaskCommandForService(service, TaskDeploy); ok {
 		t.Fatalf("expected go service to skip deploy until deploy template exists")
+	}
+}
+
+func TestFixTemplateIsGoOnlyAndNotAdvertised(t *testing.T) {
+	t.Parallel()
+
+	goService := Service{Name: "api", Kind: "service", Archetype: "go"}
+	for _, archetype := range []string{"react", "ts-ink", "ts-node", "ts-lib"} {
+		svc := Service{Name: archetype, Kind: "service", Archetype: archetype}
+		if _, supported, _ := TaskCommandForService(svc, TaskFix); supported {
+			t.Fatalf("expected %s service not to support fix", archetype)
+		}
+	}
+
+	for _, task := range AvailableTasksForService(goService) {
+		if task == string(TaskFix) {
+			t.Fatalf("internal fix task must not be advertised: %v", AvailableTasksForService(goService))
+		}
 	}
 }
 
@@ -82,11 +106,13 @@ func TestTaskTemplateCommandsAreIntentional(t *testing.T) {
 		task TaskName
 		want string
 	}{
+		{svc: goService, task: TaskFix, want: "go fix ./..."},
 		{svc: goService, task: TaskLint, want: "go tool golangci-lint run ./..."},
-		{svc: goService, task: TaskFormat, want: "gofmt -w"},
+		{svc: goService, task: TaskFormat, want: "go fmt ./..."},
 		{svc: goService, task: TaskTypecheck, want: "go test -run=^$ ./..."},
 		{svc: goPkg, task: TaskLint, want: "go tool golangci-lint run ./..."},
-		{svc: goPkg, task: TaskFormat, want: "gofmt -w"},
+		{svc: goPkg, task: TaskFix, want: "go fix ./..."},
+		{svc: goPkg, task: TaskFormat, want: "go fmt ./..."},
 		{svc: goService, task: TaskAudit, want: "go tool govulncheck ./..."},
 		{svc: reactService, task: TaskFormat, want: "pnpm format"},
 		{svc: reactService, task: TaskTypecheck, want: "pnpm typecheck"},

@@ -29,7 +29,7 @@ type TaskResolution struct {
 }
 
 func resolveTaskRequest(cfg *Config, req TaskRequest) (*TaskResolution, error) {
-	if _, ok := orchestratedTaskSet[req.Task]; !ok {
+	if !isResolvableTask(req.Task) {
 		return nil, fmt.Errorf("unsupported task %q", req.Task)
 	}
 

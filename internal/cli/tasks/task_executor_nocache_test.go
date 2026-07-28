@@ -38,14 +38,26 @@ func TestCommandForExecutionNoopWhenCountAlreadySet(t *testing.T) {
 	}
 }
 
-func TestCommandForExecutionAppendsGoFormatFiles(t *testing.T) {
+func TestCommandForExecutionFormatsAffectedGoServiceByPackage(t *testing.T) {
 	t.Parallel()
 
 	svc := Service{Name: "pythia", Archetype: "go"}
 	node := TaskNode{Service: "pythia", Task: TaskFormat}
 
-	got := commandForExecution(svc, node, "gofmt -w", []string{"main.go", "pkg/util.go"}, TaskRunOptions{})
-	if got != "gofmt -w main.go pkg/util.go" {
+	got := commandForExecution(svc, node, "go fmt ./...", []string{"main.go", "migrations/000001_create_items.sql"}, TaskRunOptions{})
+	if got != "go fmt ./..." {
+		t.Fatalf("unexpected command: %q", got)
+	}
+}
+
+func TestCommandForExecutionFormatsGoServiceAffectedOnlyBySQL(t *testing.T) {
+	t.Parallel()
+
+	svc := Service{Name: "pythia", Archetype: "go"}
+	node := TaskNode{Service: "pythia", Task: TaskFormat}
+
+	got := commandForExecution(svc, node, "go fmt ./...", []string{"migrations/000001_create_items.sql"}, TaskRunOptions{})
+	if got != "go fmt ./..." {
 		t.Fatalf("unexpected command: %q", got)
 	}
 }

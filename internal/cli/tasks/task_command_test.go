@@ -7,6 +7,15 @@ import (
 	"testing"
 )
 
+func TestRunOrchestratedTaskRejectsInternalFix(t *testing.T) {
+	t.Parallel()
+
+	err := RunOrchestratedTask("fix", []string{"mono", "fix"})
+	if err == nil || !strings.Contains(err.Error(), `unsupported task "fix"`) {
+		t.Fatalf("expected public fix invocation to be rejected, got %v", err)
+	}
+}
+
 func TestRunOrchestratedTaskUsesImpactedServicesByDefault(t *testing.T) {
 	repo := initTaskGitRepoWithFeatureChange(t)
 	withWorkingDir(t, repo)

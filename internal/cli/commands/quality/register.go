@@ -33,6 +33,7 @@ type (
 )
 
 const (
+	TaskFix       = tasks.TaskFix
 	TaskFormat    = tasks.TaskFormat
 	TaskLint      = tasks.TaskLint
 	TaskTypecheck = tasks.TaskTypecheck

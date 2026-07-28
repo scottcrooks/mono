@@ -336,15 +336,13 @@ func commandForExecution(svc Service, node TaskNode, command string, affectedFil
 }
 
 func appendFormatFilesToCommand(svc Service, node TaskNode, command string, affectedFiles []string) string {
-	if node.Task != TaskFormat || len(affectedFiles) == 0 {
+	if node.Task != TaskFormat || len(affectedFiles) == 0 || svc.Archetype == "go" {
 		return command
 	}
 
 	files := append([]string(nil), affectedFiles...)
 	sort.Strings(files)
 	switch svc.Archetype {
-	case "go":
-		return command + " " + strings.Join(files, " ")
 	case "react", "ts-ink", "ts-node", "ts-lib":
 		return command + " -- " + strings.Join(files, " ")
 	default:

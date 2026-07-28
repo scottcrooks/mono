@@ -67,7 +67,7 @@ func TestCheckCommandNoImpactedServices(t *testing.T) {
 	}
 }
 
-func TestCheckCommandBuildsFormatPhaseFirst(t *testing.T) {
+func TestCheckCommandBuildsFixPhaseFirst(t *testing.T) {
 	repo := initCheckRepoWithFeatureChange(t)
 	withWorkingDir(t, repo)
 
@@ -77,11 +77,11 @@ func TestCheckCommandBuildsFormatPhaseFirst(t *testing.T) {
 	}
 
 	plan := buildPendingCheckPlan(cfg, []string{"lib", "api"})
-	if len(plan.Phases) != 4 {
-		t.Fatalf("expected 4 phases, got %d", len(plan.Phases))
+	if len(plan.Phases) != 5 {
+		t.Fatalf("expected 5 phases, got %d", len(plan.Phases))
 	}
-	if plan.Phases[0].Task != TaskFormat {
-		t.Fatalf("expected format to be planned first, got %+v", plan.Phases[0])
+	if plan.Phases[0].Task != TaskFix {
+		t.Fatalf("expected fix to be planned first, got %+v", plan.Phases[0])
 	}
 }
 
@@ -95,7 +95,7 @@ func TestCheckCommandExecutesPhasesInOrder(t *testing.T) {
 		services    []string
 		fileTargets map[string][]string
 	}
-	calls := make([]phaseCall, 0, 4)
+	calls := make([]phaseCall, 0, 6)
 
 	original := runCheckTaskPhase
 	runCheckTaskPhase = func(_ *Config, req TaskRequest, _ TaskRunOptions) ([]TaskRunResult, error) {
@@ -127,11 +127,12 @@ func TestCheckCommandExecutesPhasesInOrder(t *testing.T) {
 		t.Fatalf("check command returned error: %v", err)
 	}
 
-	if len(calls) != 5 {
-		t.Fatalf("expected 5 phases, got %d", len(calls))
+	if len(calls) != 6 {
+		t.Fatalf("expected dependency installation plus 5 task phases, got %d calls", len(calls))
 	}
 	want := []phaseCall{
 		{kind: "deps", services: []string{"api", "lib"}},
+		{kind: "task", task: TaskFix, services: []string{"api", "lib"}},
 		{kind: "task", task: TaskFormat, services: []string{"api", "lib"}, fileTargets: map[string][]string{"lib": []string{"lib.go"}}},
 		{kind: "task", task: TaskLint, services: []string{"api", "lib"}},
 		{kind: "task", task: TaskTypecheck, services: []string{"api"}},
@@ -157,6 +158,11 @@ func TestCheckCommandPrintsSingleFinalSummary(t *testing.T) {
 	originalTask := runCheckTaskPhase
 	runCheckTaskPhase = func(_ *Config, req TaskRequest, _ TaskRunOptions) ([]TaskRunResult, error) {
 		switch req.Task {
+		case TaskFix:
+			return []TaskRunResult{
+				{Status: tasks.TaskStatusSucceeded},
+				{Status: tasks.TaskStatusSucceeded},
+			}, nil
 		case TaskFormat:
 			return []TaskRunResult{{Status: tasks.TaskStatusSucceeded}}, nil
 		case TaskLint:
@@ -189,7 +195,7 @@ func TestCheckCommandPrintsSingleFinalSummary(t *testing.T) {
 	if strings.Count(stdout, "Task summary:") != 0 {
 		t.Fatalf("unexpected per-phase summary chatter: %q", stdout)
 	}
-	if !strings.Contains(stdout, "Check complete: impacted=2 phases=4 succeeded=5 failed=0 skipped=1") {
+	if !strings.Contains(stdout, "Check complete: impacted=2 phases=5 succeeded=7 failed=0 skipped=1") {
 		t.Fatalf("unexpected final summary: %q", stdout)
 	}
 }
@@ -206,7 +212,7 @@ func TestCheckCommandReturnsErrorAfterRunningAllPhasesOnFailures(t *testing.T) {
 		runCheckDependencyInstalls = original
 	})
 
-	calls := make([]TaskName, 0, 4)
+	calls := make([]TaskName, 0, 5)
 	originalTask := runCheckTaskPhase
 	runCheckTaskPhase = func(_ *Config, req TaskRequest, opts TaskRunOptions) ([]TaskRunResult, error) {
 		calls = append(calls, req.Task)
@@ -214,8 +220,10 @@ func TestCheckCommandReturnsErrorAfterRunningAllPhasesOnFailures(t *testing.T) {
 			t.Fatalf("expected ContinueOnFailure=true")
 		}
 		switch req.Task {
+		case TaskFix:
+			return []TaskRunResult{{Status: tasks.TaskStatusFailed}}, fmt.Errorf("fix failed")
 		case TaskFormat:
-			return []TaskRunResult{{Status: tasks.TaskStatusFailed}}, fmt.Errorf("format failed")
+			return []TaskRunResult{{Status: tasks.TaskStatusSucceeded}}, nil
 		case TaskLint:
 			return []TaskRunResult{{Status: tasks.TaskStatusSucceeded}}, nil
 		case TaskTypecheck:
@@ -241,11 +249,11 @@ func TestCheckCommandReturnsErrorAfterRunningAllPhasesOnFailures(t *testing.T) {
 		}
 	})
 
-	wantCalls := []TaskName{TaskFormat, TaskLint, TaskTypecheck, TaskTest}
+	wantCalls := []TaskName{TaskFix, TaskFormat, TaskLint, TaskTypecheck, TaskTest}
 	if !reflect.DeepEqual(calls, wantCalls) {
 		t.Fatalf("expected all phases to run: got %+v want %+v", calls, wantCalls)
 	}
-	if !strings.Contains(stdout, "Check complete: impacted=2 phases=4 succeeded=3 failed=1 skipped=0") {
+	if !strings.Contains(stdout, "Check complete: impacted=2 phases=5 succeeded=4 failed=1 skipped=0") {
 		t.Fatalf("unexpected final summary: %q", stdout)
 	}
 }
@@ -259,7 +267,7 @@ func TestCheckCommandAllRunsEvenWithoutImpactedServices(t *testing.T) {
 		task     TaskName
 		services []string
 	}
-	calls := make([]phaseCall, 0, 4)
+	calls := make([]phaseCall, 0, 6)
 
 	original := runCheckTaskPhase
 	runCheckTaskPhase = func(_ *Config, req TaskRequest, _ TaskRunOptions) ([]TaskRunResult, error) {
@@ -292,6 +300,7 @@ func TestCheckCommandAllRunsEvenWithoutImpactedServices(t *testing.T) {
 
 	want := []phaseCall{
 		{kind: "deps", services: []string{"api", "lib"}},
+		{kind: "task", task: TaskFix, services: []string{"api", "lib"}},
 		{kind: "task", task: TaskFormat, services: []string{"api", "lib"}},
 		{kind: "task", task: TaskLint, services: []string{"api", "lib"}},
 		{kind: "task", task: TaskTypecheck, services: []string{"api"}},
@@ -316,7 +325,7 @@ func TestCheckCommandFallsBackToLocalDiffWhenBaseBranchMissing(t *testing.T) {
 		task     TaskName
 		services []string
 	}
-	calls := make([]phaseCall, 0, 4)
+	calls := make([]phaseCall, 0, 6)
 
 	original := runCheckTaskPhase
 	runCheckTaskPhase = func(_ *Config, req TaskRequest, _ TaskRunOptions) ([]TaskRunResult, error) {
@@ -349,6 +358,7 @@ func TestCheckCommandFallsBackToLocalDiffWhenBaseBranchMissing(t *testing.T) {
 
 	want := []phaseCall{
 		{kind: "deps", services: []string{"api", "lib"}},
+		{kind: "task", task: TaskFix, services: []string{"api", "lib"}},
 		{kind: "task", task: TaskFormat, services: []string{"api", "lib"}},
 		{kind: "task", task: TaskLint, services: []string{"api", "lib"}},
 		{kind: "task", task: TaskTypecheck, services: []string{"api"}},

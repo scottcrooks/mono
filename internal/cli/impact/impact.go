@@ -324,7 +324,7 @@ func computeExplainChains(changed []string, reverse map[string][]string) map[str
 }
 
 func BuildCheckTaskPreview(cfg *Config, impacted []string) []CheckTaskPreview {
-	required := []string{"format", "lint", "typecheck", "test"}
+	required := []string{"fix", "format", "lint", "typecheck", "test"}
 	rows := make([]CheckTaskPreview, 0, len(impacted))
 	for _, name := range impacted {
 		svc := findService(cfg, name)
@@ -354,8 +354,9 @@ func BuildCheckTaskPreview(cfg *Config, impacted []string) []CheckTaskPreview {
 func BuildPendingCheckPlan(cfg *Config, impacted []string) PendingCheckPlan {
 	preview := BuildCheckTaskPreview(cfg, impacted)
 
-	phaseTasks := []TaskName{TaskFormat, TaskLint, TaskTypecheck, TaskTest}
+	phaseTasks := []TaskName{TaskFix, TaskFormat, TaskLint, TaskTypecheck, TaskTest}
 	phaseServices := map[TaskName][]string{
+		TaskFix:       {},
 		TaskFormat:    {},
 		TaskLint:      {},
 		TaskTypecheck: {},

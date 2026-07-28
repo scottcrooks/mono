@@ -54,6 +54,19 @@ func TestResolveTaskRequestUnsupportedTaskMarksSkipped(t *testing.T) {
 	}
 }
 
+func TestResolveTaskRequestAllowsInternalFix(t *testing.T) {
+	t.Parallel()
+
+	cfg := &Config{Services: []Service{{Name: "api", Path: "apps/api", Kind: "service", Archetype: "go"}}}
+	resolved, err := resolveTaskRequest(cfg, TaskRequest{Task: TaskFix})
+	if err != nil {
+		t.Fatalf("resolveTaskRequest error: %v", err)
+	}
+	if len(resolved.Nodes) != 1 || resolved.Nodes[0].Command != "go fix ./..." {
+		t.Fatalf("unexpected fix resolution: %+v", resolved.Nodes)
+	}
+}
+
 func TestResolveTaskRequestIntegrationUsesIntegrationCommand(t *testing.T) {
 	t.Parallel()
 

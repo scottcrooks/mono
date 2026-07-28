@@ -205,7 +205,7 @@ func TestBuildCheckTaskPreview(t *testing.T) {
 		t.Fatalf("expected 2 rows, got %d", len(rows))
 	}
 
-	if rows[0].Service != "api" || strings.Join(rows[0].Present, ",") != "format,lint,typecheck,test" {
+	if rows[0].Service != "api" || strings.Join(rows[0].Present, ",") != "fix,format,lint,typecheck,test" {
 		t.Fatalf("unexpected first row: %+v", rows[0])
 	}
 	if len(rows[0].Missing) != 0 {
@@ -231,20 +231,45 @@ func TestBuildPendingCheckPlan(t *testing.T) {
 		t.Fatalf("unexpected impacted services: %v", plan.ImpactedServices)
 	}
 
-	if len(plan.Phases) != 4 {
-		t.Fatalf("expected 4 phases, got %d", len(plan.Phases))
+	if len(plan.Phases) != 5 {
+		t.Fatalf("expected 5 phases, got %d", len(plan.Phases))
 	}
-	if plan.Phases[0].Task != TaskFormat || !reflect.DeepEqual(plan.Phases[0].Services, []string{"api", "lib"}) {
-		t.Fatalf("unexpected format phase: %+v", plan.Phases[0])
+	if plan.Phases[0].Task != TaskFix || !reflect.DeepEqual(plan.Phases[0].Services, []string{"api", "lib"}) {
+		t.Fatalf("unexpected fix phase: %+v", plan.Phases[0])
 	}
-	if plan.Phases[1].Task != TaskLint || !reflect.DeepEqual(plan.Phases[1].Services, []string{"api", "lib"}) {
-		t.Fatalf("unexpected lint phase: %+v", plan.Phases[1])
+	if plan.Phases[1].Task != TaskFormat || !reflect.DeepEqual(plan.Phases[1].Services, []string{"api", "lib"}) {
+		t.Fatalf("unexpected format phase: %+v", plan.Phases[1])
 	}
-	if plan.Phases[2].Task != TaskTypecheck || !reflect.DeepEqual(plan.Phases[2].Services, []string{"api"}) {
-		t.Fatalf("unexpected typecheck phase: %+v", plan.Phases[2])
+	if plan.Phases[2].Task != TaskLint || !reflect.DeepEqual(plan.Phases[2].Services, []string{"api", "lib"}) {
+		t.Fatalf("unexpected lint phase: %+v", plan.Phases[2])
 	}
-	if plan.Phases[3].Task != TaskTest || !reflect.DeepEqual(plan.Phases[3].Services, []string{"api", "lib"}) {
-		t.Fatalf("unexpected test phase: %+v", plan.Phases[3])
+	if plan.Phases[3].Task != TaskTypecheck || !reflect.DeepEqual(plan.Phases[3].Services, []string{"api"}) {
+		t.Fatalf("unexpected typecheck phase: %+v", plan.Phases[3])
+	}
+	if plan.Phases[4].Task != TaskTest || !reflect.DeepEqual(plan.Phases[4].Services, []string{"api", "lib"}) {
+		t.Fatalf("unexpected test phase: %+v", plan.Phases[4])
+	}
+}
+
+func TestBuildPendingCheckPlanSelectsOnlyGoTargetsForFix(t *testing.T) {
+	t.Parallel()
+
+	cfg := &Config{Services: []Service{
+		{Name: "api", Kind: "service", Archetype: "go"},
+		{Name: "web", Kind: "service", Archetype: "react"},
+	}}
+
+	plan := BuildPendingCheckPlan(cfg, []string{"web", "api"})
+	if !reflect.DeepEqual(plan.Phases[0], CheckTaskPhase{Task: TaskFix, Services: []string{"api"}}) {
+		t.Fatalf("unexpected mixed-archetype fix phase: %+v", plan.Phases[0])
+	}
+	if !reflect.DeepEqual(plan.Phases[1].Services, []string{"api", "web"}) {
+		t.Fatalf("unexpected mixed-archetype format phase: %+v", plan.Phases[1])
+	}
+
+	rows := BuildCheckTaskPreview(cfg, []string{"web"})
+	if len(rows) != 1 || strings.Join(rows[0].Missing, ",") != "fix" {
+		t.Fatalf("expected web preview to skip only fix, got %+v", rows)
 	}
 }
 

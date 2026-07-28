@@ -11,6 +11,7 @@ type TaskName string
 
 const (
 	TaskBuild     TaskName = "build"
+	TaskFix       TaskName = "fix"
 	TaskFormat    TaskName = "format"
 	TaskLint      TaskName = "lint"
 	TaskTypecheck TaskName = "typecheck"
@@ -42,6 +43,10 @@ var orchestratedTaskSet = map[TaskName]struct{}{
 	TaskDeploy:    {},
 }
 
+var internalTaskSet = map[TaskName]struct{}{
+	TaskFix: {},
+}
+
 // TaskNode is the smallest execution unit in the orchestrator.
 type TaskNode struct {
 	Service string
@@ -56,6 +61,14 @@ func ParseTaskName(raw string) (TaskName, bool) {
 	task := TaskName(strings.TrimSpace(raw))
 	_, ok := orchestratedTaskSet[task]
 	return task, ok
+}
+
+func isResolvableTask(task TaskName) bool {
+	if _, ok := orchestratedTaskSet[task]; ok {
+		return true
+	}
+	_, ok := internalTaskSet[task]
+	return ok
 }
 
 func sortedTaskNames() []string {

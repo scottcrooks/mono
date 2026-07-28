@@ -13,3 +13,11 @@ func TestParseTaskNameAudit(t *testing.T) {
 		t.Fatalf("unexpected task: %q", task)
 	}
 }
+
+func TestParseTaskNameRejectsInternalFix(t *testing.T) {
+	t.Parallel()
+
+	if task, ok := ParseTaskName("fix"); ok {
+		t.Fatalf("expected fix to remain internal, got recognized task %q", task)
+	}
+}

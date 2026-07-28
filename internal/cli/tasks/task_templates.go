@@ -18,7 +18,8 @@ var taskTemplates = map[string]archetypeTemplate{
 	"go": {
 		serviceTasks: map[TaskName]string{
 			TaskBuild:     "go build ./...",
-			TaskFormat:    "gofmt -w",
+			TaskFix:       "go fix ./...",
+			TaskFormat:    "go fmt ./...",
 			TaskLint:      "go tool golangci-lint run ./...",
 			TaskTypecheck: "go test -run=^$ ./...",
 			TaskTest:      "go test ./...",
@@ -27,7 +28,8 @@ var taskTemplates = map[string]archetypeTemplate{
 		},
 		packageTasks: map[TaskName]string{
 			TaskBuild:  "go build ./...",
-			TaskFormat: "gofmt -w",
+			TaskFix:    "go fix ./...",
+			TaskFormat: "go fmt ./...",
 			TaskLint:   "go tool golangci-lint run ./...",
 			TaskTest:   "go test ./...",
 			TaskAudit:  "go tool govulncheck ./...",
