@@ -1,6 +1,7 @@
 package workflow
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"fmt"
@@ -16,6 +17,13 @@ import (
 )
 
 type worktreeCommand struct{}
+
+type worktreePruneOptions struct {
+	merged      bool
+	all         bool
+	dryRun      bool
+	interactive bool
+}
 
 type worktreeWorkflowStatus string
 
@@ -61,7 +69,7 @@ func (c *worktreeCommand) Run(args []string) error {
 	case "remove":
 		return runWorktreeRemove(args[3:])
 	case "prune":
-		return runWorktreePrune()
+		return runWorktreePrune(args[3:])
 	default:
 		printWorktreeUsage()
 		return fmt.Errorf("unknown worktree subcommand: %s", args[2])
@@ -316,7 +324,15 @@ func runWorktreeRemove(args []string) error {
 	return nil
 }
 
-func runWorktreePrune() error {
+func runWorktreePrune(args []string) error {
+	options, err := parsePruneArgs(args)
+	if err != nil {
+		return err
+	}
+	if options.merged || options.all || options.interactive {
+		return runWorktreePruneSelected(options)
+	}
+
 	p := output.DefaultPrinter()
 
 	cmd := exec.Command("git", "worktree", "prune")
@@ -330,6 +346,234 @@ func runWorktreePrune() error {
 	}
 	p.StepOK("worktree", "Pruned stale worktree metadata")
 	return nil
+}
+
+func parsePruneArgs(args []string) (options worktreePruneOptions, err error) {
+	for _, arg := range args {
+		switch arg {
+		case "--merged":
+			if options.merged {
+				return worktreePruneOptions{}, fmt.Errorf("--merged may only be specified once")
+			}
+			options.merged = true
+		case "--all":
+			if options.all {
+				return worktreePruneOptions{}, fmt.Errorf("--all may only be specified once")
+			}
+			options.all = true
+		case "-i", "--interactive":
+			if options.interactive {
+				return worktreePruneOptions{}, fmt.Errorf("interactive mode may only be specified once")
+			}
+			options.interactive = true
+		case "--dry-run":
+			if options.dryRun {
+				return worktreePruneOptions{}, fmt.Errorf("--dry-run may only be specified once")
+			}
+			options.dryRun = true
+		default:
+			return worktreePruneOptions{}, fmt.Errorf("unknown worktree prune option: %s", arg)
+		}
+	}
+	if options.merged && options.all {
+		return worktreePruneOptions{}, fmt.Errorf("--all and --merged cannot be used together")
+	}
+	if options.dryRun && !options.merged && !options.all {
+		return worktreePruneOptions{}, fmt.Errorf("--dry-run requires --merged or --all")
+	}
+	if options.dryRun && options.interactive {
+		return worktreePruneOptions{}, fmt.Errorf("--dry-run cannot be used with interactive mode")
+	}
+	return options, nil
+}
+
+func runWorktreePruneMerged(dryRun bool) error {
+	return runWorktreePruneSelected(worktreePruneOptions{merged: true, dryRun: dryRun})
+}
+
+func runWorktreePruneSelected(options worktreePruneOptions) error {
+	p := output.DefaultPrinter()
+	base := ""
+	if options.merged {
+		var err error
+		base, err = defaultMergeBaseBranch()
+		if err != nil {
+			return fmt.Errorf("cannot prune merged worktrees: %w", err)
+		}
+	} else if resolvedBase, err := defaultMergeBaseBranch(); err == nil {
+		base = resolvedBase
+	}
+	entries, err := gitWorktreeEntries()
+	if err != nil {
+		return err
+	}
+	if _, err := loadWorktreeStatusStore(); err != nil {
+		return err
+	}
+	if options.merged {
+		p.Summary("Pruning worktrees merged into " + base)
+	} else if options.interactive {
+		p.Summary("Reviewing worktrees for pruning (press Enter to keep)")
+	} else {
+		p.Summary("Pruning all eligible worktrees")
+	}
+	currentPath, err := currentWorktreePath()
+	if err != nil {
+		return fmt.Errorf("cannot prune worktrees without identifying the current worktree: %w", err)
+	}
+	primaryPath := ""
+	if len(entries) > 0 {
+		primaryPath = entries[0].Path
+	}
+	sort.Slice(entries, func(i, j int) bool { return entries[i].Path < entries[j].Path })
+
+	var failures []error
+	var missingPaths []string
+	reader := bufio.NewReader(os.Stdin)
+	inputClosed := false
+	for _, entry := range entries {
+		if entry.Path == primaryPath || entry.Path == currentPath || (base != "" && isDefaultBaseWorktree(entry, base)) {
+			continue
+		}
+		if options.merged {
+			if entry.Branch == "" || entry.Detached {
+				continue
+			}
+			merged, mergeErr := isBranchMergedIntoBase(entry.Branch, base)
+			if mergeErr != nil {
+				p.StepWarn("worktree", fmt.Sprintf("Skipped %s: could not inspect merge status: %v", entry.Path, mergeErr))
+				continue
+			}
+			if !merged {
+				continue
+			}
+		}
+		if _, pathErr := os.Stat(entry.Path); os.IsNotExist(pathErr) {
+			missingPaths = append(missingPaths, entry.Path)
+			if options.dryRun {
+				p.Summary("Would prune stale worktree metadata for " + entry.Path + " because the worktree path is missing")
+			}
+			continue
+		} else if pathErr != nil {
+			p.StepWarn("worktree", fmt.Sprintf("Skipped %s: could not inspect path: %v", entry.Path, pathErr))
+			continue
+		}
+		dirty, dirtyErr := isWorktreeDirty(entry.Path)
+		if dirtyErr != nil {
+			p.StepWarn("worktree", fmt.Sprintf("Skipped %s: could not inspect status: %v", entry.Path, dirtyErr))
+			continue
+		}
+		if dirty && !options.interactive {
+			p.StepWarn("worktree", "Skipped dirty worktree "+entry.Path)
+			continue
+		}
+		branchLabel := entry.Branch
+		if branchLabel == "" || entry.Detached {
+			branchLabel = "detached"
+		}
+		if dirty {
+			branchLabel += ", dirty; removal discards changes"
+		}
+		removeCandidate := true
+		if options.interactive {
+			if inputClosed {
+				removeCandidate = false
+			} else {
+				for {
+					fmt.Fprintf(os.Stderr, "Keep worktree %s (%s)? [Y/n] ", entry.Path, branchLabel)
+					answer, readErr := reader.ReadString('\n')
+					answer = strings.TrimSpace(answer)
+					if readErr != nil {
+						inputClosed = true
+					}
+					if answer == "" {
+						removeCandidate = false
+						p.Summary("Kept " + entry.Path)
+						if inputClosed {
+							p.StepWarn("worktree", "Input ended; keeping this and remaining worktrees")
+						}
+						break
+					}
+					switch strings.ToLower(answer) {
+					case "", "y", "yes":
+						answer = "keep"
+					case "n", "no":
+						answer = "remove"
+					default:
+						if inputClosed {
+							removeCandidate = false
+							p.StepWarn("worktree", "Input ended; keeping this and remaining worktrees")
+							break
+						}
+						fmt.Fprintln(os.Stderr, "Please answer y or n.")
+						continue
+					}
+					if answer == "keep" {
+						p.Summary("Kept " + entry.Path)
+						removeCandidate = false
+						break
+					}
+					break
+				}
+			}
+		}
+		if !removeCandidate {
+			continue
+		}
+		if options.dryRun {
+			p.Summary("Would remove " + entry.Path + " (" + branchLabel + ")")
+			continue
+		}
+
+		removeArgs := []string{"worktree", "remove"}
+		if dirty {
+			removeArgs = append(removeArgs, "--force")
+		}
+		removeArgs = append(removeArgs, entry.Path)
+		cmd := exec.Command("git", removeArgs...)
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+		if removeErr := cmd.Run(); removeErr != nil {
+			wrapped := fmt.Errorf("failed to remove worktree %s: %w", entry.Path, removeErr)
+			p.StepWarn("worktree", wrapped.Error())
+			failures = append(failures, wrapped)
+			continue
+		}
+		if deleteErr := deleteWorktreeStatus(entry.Path); deleteErr != nil {
+			wrapped := fmt.Errorf("removed worktree %s but failed to delete its status tag: %w", entry.Path, deleteErr)
+			p.StepWarn("worktree", wrapped.Error())
+			failures = append(failures, wrapped)
+			continue
+		}
+		p.StepOK("worktree", "Removed worktree "+entry.Path)
+	}
+
+	if options.dryRun {
+		return nil
+	}
+	pruneCmd := exec.Command("git", "worktree", "prune")
+	pruneCmd.Stdout = os.Stdout
+	pruneCmd.Stderr = os.Stderr
+	if pruneErr := pruneCmd.Run(); pruneErr != nil {
+		failures = append(failures, fmt.Errorf("git worktree prune failed: %w", pruneErr))
+	} else {
+		for _, path := range missingPaths {
+			p.StepOK("worktree", "Pruned stale worktree metadata for "+path+" because the worktree path was missing")
+		}
+	}
+	if statusErr := pruneStaleWorktreeStatuses(); statusErr != nil {
+		failures = append(failures, statusErr)
+	}
+	if len(failures) > 0 {
+		return errors.Join(failures...)
+	}
+	p.StepOK("worktree", "Pruned stale worktree metadata")
+	return nil
+}
+
+func isDefaultBaseWorktree(entry gitWorktreeEntry, base string) bool {
+	baseBranch := strings.TrimPrefix(base, "origin/")
+	return entry.Branch == base || entry.Branch == baseBranch
 }
 
 func parseCreateArgs(args []string) (branch, fromRef, uniqueID string, noBootstrap, skipSync bool, err error) {
@@ -1184,7 +1428,7 @@ func printWorktreeUsage() {
 	p.Summary("  mono worktree path <branch-or-id>")
 	p.Summary("  mono worktree tag <IN_PROGRESS|DONE|NEEDS_INPUT>")
 	p.Summary("  mono worktree remove <branch-or-id> [--force]")
-	p.Summary("  mono worktree prune")
+	p.Summary("  mono worktree prune [--merged | --all] [--dry-run] [-i|--interactive]")
 	p.Blank()
 	p.Summary("Convention:")
 	p.Summary("  Worktrees are created at ~/.worktrees/<repo>/<unique-id>/")

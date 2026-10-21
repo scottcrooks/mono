@@ -131,6 +131,44 @@ func TestParseListArgs(t *testing.T) {
 	}
 }
 
+func TestParsePruneArgs(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		args []string
+		want worktreePruneOptions
+	}{
+		{args: []string{"--merged", "--dry-run"}, want: worktreePruneOptions{merged: true, dryRun: true}},
+		{args: []string{"--all", "--dry-run"}, want: worktreePruneOptions{all: true, dryRun: true}},
+		{args: []string{"-i"}, want: worktreePruneOptions{interactive: true}},
+		{args: []string{"--interactive"}, want: worktreePruneOptions{interactive: true}},
+		{args: []string{"--merged", "-i"}, want: worktreePruneOptions{merged: true, interactive: true}},
+	}
+	for _, tc := range cases {
+		got, err := parsePruneArgs(tc.args)
+		if err != nil || got != tc.want {
+			t.Errorf("parsePruneArgs(%v) = %+v, %v; want %+v", tc.args, got, err, tc.want)
+		}
+	}
+	if got, err := parsePruneArgs(nil); err != nil || got != (worktreePruneOptions{}) {
+		t.Fatalf("expected unchanged no-argument mode, got %+v, %v", got, err)
+	}
+}
+
+func TestParsePruneArgsRejectsInvalidOptions(t *testing.T) {
+	t.Parallel()
+
+	for _, args := range [][]string{
+		{"--dry-run"}, {"--merged", "--merged"}, {"--all", "--all"},
+		{"--merged", "--all"}, {"--merged", "--dry-run", "--dry-run"},
+		{"-i", "--interactive"}, {"--all", "--interactive", "--dry-run"}, {"--force"},
+	} {
+		if _, err := parsePruneArgs(args); err == nil {
+			t.Errorf("expected parsePruneArgs(%v) to fail", args)
+		}
+	}
+}
+
 func TestParseListArgsInvalid(t *testing.T) {
 	t.Parallel()
 
@@ -529,6 +567,323 @@ func TestIsBranchMergedIntoBase(t *testing.T) {
 	}
 }
 
+func TestRunWorktreePruneMerged(t *testing.T) {
+	repo := initTestGitRepo(t)
+	writeFile(t, repo, "README.md", "root\n")
+	gitRun(t, repo, "add", "README.md")
+	gitRun(t, repo, "commit", "-m", "initial")
+
+	gitRun(t, repo, "checkout", "-b", "feature/merged")
+	writeFile(t, repo, "merged.txt", "merged\n")
+	gitRun(t, repo, "add", "merged.txt")
+	gitRun(t, repo, "commit", "-m", "merged feature")
+	gitRun(t, repo, "checkout", "main")
+	gitRun(t, repo, "merge", "--no-ff", "feature/merged", "-m", "merge feature")
+
+	gitRun(t, repo, "checkout", "-b", "feature/unmerged")
+	writeFile(t, repo, "unmerged.txt", "unmerged\n")
+	gitRun(t, repo, "add", "unmerged.txt")
+	gitRun(t, repo, "commit", "-m", "unmerged feature")
+	gitRun(t, repo, "checkout", "main")
+	gitRun(t, repo, "branch", "feature/dirty")
+
+	paths := map[string]string{
+		"merged":   filepath.Join(t.TempDir(), "merged"),
+		"unmerged": filepath.Join(t.TempDir(), "unmerged"),
+		"dirty":    filepath.Join(t.TempDir(), "dirty"),
+		"detached": filepath.Join(t.TempDir(), "detached"),
+	}
+	gitRun(t, repo, "worktree", "add", paths["merged"], "feature/merged")
+	gitRun(t, repo, "worktree", "add", paths["unmerged"], "feature/unmerged")
+	gitRun(t, repo, "worktree", "add", paths["dirty"], "feature/dirty")
+	gitRun(t, repo, "worktree", "add", "--detach", paths["detached"], "main")
+	writeFile(t, paths["dirty"], "untracked.txt", "dirty\n")
+
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("os.Getwd: %v", err)
+	}
+	t.Cleanup(func() {
+		if chdirErr := os.Chdir(wd); chdirErr != nil {
+			t.Fatalf("restore cwd: %v", chdirErr)
+		}
+	})
+	if err := os.Chdir(repo); err != nil {
+		t.Fatalf("os.Chdir repo: %v", err)
+	}
+	for name, path := range paths {
+		paths[name] = gitOutputString(t, path, "rev-parse", "--show-toplevel")
+	}
+
+	// The legacy invocation only prunes stale Git metadata and status keys.
+	if err := runWorktreePrune(nil); err != nil {
+		t.Fatalf("runWorktreePrune without options: %v", err)
+	}
+	for name, path := range paths {
+		if _, err := os.Stat(path); err != nil {
+			t.Fatalf("no-argument prune removed %s worktree: %v", name, err)
+		}
+	}
+	gitRun(t, repo, "branch", "feature/uninspectable", "main")
+	uninspectablePath := filepath.Join(t.TempDir(), "uninspectable")
+	gitRun(t, repo, "worktree", "add", uninspectablePath, "feature/uninspectable")
+	paths["uninspectable"] = gitOutputString(t, uninspectablePath, "rev-parse", "--show-toplevel")
+	if err := os.RemoveAll(paths["uninspectable"]); err != nil {
+		t.Fatalf("remove uninspectable worktree directory: %v", err)
+	}
+
+	storePath, err := worktreeStatusStorePath()
+	if err != nil {
+		t.Fatalf("worktreeStatusStorePath: %v", err)
+	}
+	store := &worktreeStatusStore{Worktrees: make(map[string]worktreeWorkflowStatus)}
+	for _, path := range paths {
+		store.Worktrees[normalizeWorktreePath(path)] = workflowStatusDone
+	}
+	if err := saveWorktreeStatusStoreToPath(storePath, store); err != nil {
+		t.Fatalf("save status store: %v", err)
+	}
+	porcelainBefore := gitOutputString(t, repo, "worktree", "list", "--porcelain")
+	branchesBefore := gitOutputString(t, repo, "for-each-ref", "--format=%(refname) %(objectname)", "refs/heads")
+	statusesBefore, err := os.ReadFile(storePath)
+	if err != nil {
+		t.Fatalf("read status store: %v", err)
+	}
+	preview, err := captureStdout(t, func() error {
+		return runWorktreePrune([]string{"--merged", "--dry-run"})
+	})
+	if err != nil {
+		t.Fatalf("dry-run merged prune: %v", err)
+	}
+	if want := "Would prune stale worktree metadata for " + paths["uninspectable"] + " because the worktree path is missing"; !strings.Contains(preview, want) {
+		t.Fatalf("dry-run output did not explain missing worktree path; wanted %q in:\n%s", want, preview)
+	}
+	if got := gitOutputString(t, repo, "worktree", "list", "--porcelain"); got != porcelainBefore {
+		t.Fatalf("dry-run changed worktree metadata\nbefore:\n%s\nafter:\n%s", porcelainBefore, got)
+	}
+	if got := gitOutputString(t, repo, "for-each-ref", "--format=%(refname) %(objectname)", "refs/heads"); got != branchesBefore {
+		t.Fatalf("dry-run changed local branches\nbefore:\n%s\nafter:\n%s", branchesBefore, got)
+	}
+	statusesAfter, err := os.ReadFile(storePath)
+	if err != nil {
+		t.Fatalf("read status store after dry-run: %v", err)
+	}
+	if string(statusesAfter) != string(statusesBefore) {
+		t.Fatal("dry-run changed workflow status tags")
+	}
+	allPreview, err := captureStdout(t, func() error {
+		return runWorktreePrune([]string{"--all", "--dry-run"})
+	})
+	if err != nil {
+		t.Fatalf("all-worktree dry-run: %v", err)
+	}
+	for _, name := range []string{"merged", "unmerged", "detached"} {
+		if !strings.Contains(allPreview, "Would remove "+paths[name]) {
+			t.Errorf("all-worktree dry-run did not include %s worktree %s:\n%s", name, paths[name], allPreview)
+		}
+	}
+	if strings.Contains(allPreview, "Would remove "+paths["dirty"]) || strings.Contains(allPreview, "Would remove "+repo) {
+		t.Fatalf("all-worktree dry-run included dirty or primary worktree:\n%s", allPreview)
+	}
+	if got := gitOutputString(t, repo, "worktree", "list", "--porcelain"); got != porcelainBefore {
+		t.Fatalf("all-worktree dry-run changed worktree metadata\nbefore:\n%s\nafter:\n%s", porcelainBefore, got)
+	}
+	if got := gitOutputString(t, repo, "for-each-ref", "--format=%(refname) %(objectname)", "refs/heads"); got != branchesBefore {
+		t.Fatalf("all-worktree dry-run changed local branches\nbefore:\n%s\nafter:\n%s", branchesBefore, got)
+	}
+	statusesAfterAllPreview, err := os.ReadFile(storePath)
+	if err != nil {
+		t.Fatalf("read status store after all-worktree dry-run: %v", err)
+	}
+	if string(statusesAfterAllPreview) != string(statusesBefore) {
+		t.Fatal("all-worktree dry-run changed workflow status tags")
+	}
+	for name, path := range paths {
+		if _, err := os.Stat(path); err != nil {
+			if name != "uninspectable" || !os.IsNotExist(err) {
+				t.Fatalf("dry-run changed %s worktree path: %v", name, err)
+			}
+		}
+	}
+
+	pruneOutput, err := captureStdout(t, func() error {
+		return runWorktreePrune([]string{"--merged"})
+	})
+	if err != nil {
+		t.Fatalf("merged prune: %v", err)
+	}
+	if want := "Pruned stale worktree metadata for " + paths["uninspectable"] + " because the worktree path was missing"; !strings.Contains(pruneOutput, want) {
+		t.Fatalf("prune output did not confirm missing-path metadata cleanup; wanted %q in:\n%s", want, pruneOutput)
+	}
+	if _, err := os.Stat(paths["merged"]); !os.IsNotExist(err) {
+		t.Fatalf("expected merged worktree to be removed, stat error: %v", err)
+	}
+	for _, name := range []string{"unmerged", "dirty", "detached"} {
+		if _, err := os.Stat(paths[name]); err != nil {
+			t.Fatalf("expected %s worktree to remain: %v", name, err)
+		}
+	}
+	if got := gitOutputString(t, repo, "show-ref", "--verify", "refs/heads/feature/merged"); got == "" {
+		t.Fatal("expected merged local branch to remain")
+	}
+	remaining, err := loadWorktreeStatusStoreFromPath(storePath)
+	if err != nil {
+		t.Fatalf("load status store after prune: %v", err)
+	}
+	if _, ok := remaining.Worktrees[normalizeWorktreePath(paths["uninspectable"])]; ok {
+		t.Fatal("expected stale uninspectable worktree status tag to be pruned with stale Git metadata")
+	}
+	if _, ok := remaining.Worktrees[normalizeWorktreePath(paths["merged"])]; ok {
+		t.Fatal("expected successfully removed worktree status tag to be cleared")
+	}
+	for _, name := range []string{"unmerged", "dirty", "detached"} {
+		if _, ok := remaining.Worktrees[normalizeWorktreePath(paths[name])]; !ok {
+			t.Errorf("expected %s worktree status tag to remain", name)
+		}
+	}
+	allOutput, err := captureStdout(t, func() error {
+		return runWorktreePrune([]string{"--all"})
+	})
+	if err != nil {
+		t.Fatalf("all-worktree prune: %v", err)
+	}
+	for _, name := range []string{"unmerged", "detached"} {
+		if _, err := os.Stat(paths[name]); !os.IsNotExist(err) {
+			t.Errorf("expected --all to remove %s worktree, stat error: %v", name, err)
+		}
+		if !strings.Contains(allOutput, "Removed worktree "+paths[name]) {
+			t.Errorf("--all output did not report removed %s worktree:\n%s", name, allOutput)
+		}
+	}
+	if got := gitOutputString(t, repo, "show-ref", "--verify", "refs/heads/feature/unmerged"); got == "" {
+		t.Error("expected --all to retain local branch for removed unmerged worktree")
+	}
+	if _, err := os.Stat(paths["dirty"]); err != nil {
+		t.Errorf("expected --all to retain dirty worktree: %v", err)
+	}
+}
+
+func TestRunWorktreePruneInteractiveDefaultsToKeep(t *testing.T) {
+	repo := initTestGitRepo(t)
+	writeFile(t, repo, "README.md", "root\n")
+	gitRun(t, repo, "add", "README.md")
+	gitRun(t, repo, "commit", "-m", "initial")
+	for _, branch := range []string{"feature/remove", "feature/keep", "feature/dirty-keep", "feature/dirty-remove"} {
+		gitRun(t, repo, "branch", branch)
+	}
+	pathsRoot := t.TempDir()
+	removePath := filepath.Join(pathsRoot, "a-remove")
+	keepPath := filepath.Join(pathsRoot, "b-keep")
+	dirtyKeepPath := filepath.Join(pathsRoot, "c-dirty-keep")
+	dirtyRemovePath := filepath.Join(pathsRoot, "d-dirty-remove")
+	gitRun(t, repo, "worktree", "add", removePath, "feature/remove")
+	gitRun(t, repo, "worktree", "add", keepPath, "feature/keep")
+	gitRun(t, repo, "worktree", "add", dirtyKeepPath, "feature/dirty-keep")
+	gitRun(t, repo, "worktree", "add", dirtyRemovePath, "feature/dirty-remove")
+	writeFile(t, dirtyKeepPath, "untracked.txt", "keep this dirty data\n")
+	writeFile(t, dirtyRemovePath, "untracked.txt", "explicitly remove this dirty data\n")
+
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("os.Getwd: %v", err)
+	}
+	t.Cleanup(func() {
+		if chdirErr := os.Chdir(wd); chdirErr != nil {
+			t.Fatalf("restore cwd: %v", chdirErr)
+		}
+	})
+	if err := os.Chdir(repo); err != nil {
+		t.Fatalf("os.Chdir repo: %v", err)
+	}
+
+	oldStdin := os.Stdin
+	oldStderr := os.Stderr
+	readPipe, writePipe, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("os.Pipe: %v", err)
+	}
+	if _, err := writePipe.WriteString("n\n\n\nn\n"); err != nil {
+		t.Fatalf("write interactive answers: %v", err)
+	}
+	if err := writePipe.Close(); err != nil {
+		t.Fatalf("close interactive input: %v", err)
+	}
+	os.Stdin = readPipe
+	stderrFile, err := os.CreateTemp(t.TempDir(), "interactive-stderr-")
+	if err != nil {
+		t.Fatalf("create stderr capture: %v", err)
+	}
+	os.Stderr = stderrFile
+	t.Cleanup(func() {
+		os.Stdin = oldStdin
+		os.Stderr = oldStderr
+		_ = readPipe.Close()
+		_ = stderrFile.Close()
+	})
+	output, err := captureStdout(t, func() error {
+		return runWorktreePrune([]string{"--interactive"})
+	})
+	if err != nil {
+		t.Fatalf("interactive prune: %v", err)
+	}
+	if _, err := os.Stat(removePath); !os.IsNotExist(err) {
+		t.Fatalf("expected n response to remove first worktree, stat error: %v", err)
+	}
+	if _, err := os.Stat(keepPath); err != nil {
+		t.Fatalf("expected blank response to keep second worktree: %v", err)
+	}
+	if _, err := os.Stat(dirtyKeepPath); err != nil {
+		t.Fatalf("expected blank response to keep dirty worktree: %v", err)
+	}
+	if _, err := os.Stat(dirtyRemovePath); !os.IsNotExist(err) {
+		t.Fatalf("expected explicit n response to remove dirty worktree, stat error: %v", err)
+	}
+	if _, err := stderrFile.Seek(0, io.SeekStart); err != nil {
+		t.Fatalf("rewind stderr capture: %v", err)
+	}
+	prompts, err := io.ReadAll(stderrFile)
+	if err != nil {
+		t.Fatalf("read stderr capture: %v", err)
+	}
+	if !strings.Contains(string(prompts), dirtyKeepPath) || !strings.Contains(string(prompts), "dirty; removal discards changes") {
+		t.Fatalf("interactive prompt did not identify dirty worktree and removal impact:\n%s", prompts)
+	}
+	if !strings.Contains(output, "Kept ") {
+		t.Fatalf("expected output to report default keep decision, got:\n%s", output)
+	}
+	for _, branch := range []string{"feature/remove", "feature/keep", "feature/dirty-keep", "feature/dirty-remove"} {
+		if got := gitOutputString(t, repo, "show-ref", "--verify", "refs/heads/"+branch); got == "" {
+			t.Errorf("expected interactive prune to retain local branch %s", branch)
+		}
+	}
+}
+
+func TestRunWorktreePruneMergedRequiresBase(t *testing.T) {
+	repo := t.TempDir()
+	gitRun(t, repo, "init", "-b", "topic")
+	gitRun(t, repo, "config", "user.name", "Mono Test")
+	gitRun(t, repo, "config", "user.email", "mono-test@example.com")
+	writeFile(t, repo, "README.md", "topic\n")
+	gitRun(t, repo, "add", "README.md")
+	gitRun(t, repo, "commit", "-m", "topic")
+
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("os.Getwd: %v", err)
+	}
+	t.Cleanup(func() {
+		if chdirErr := os.Chdir(wd); chdirErr != nil {
+			t.Fatalf("restore cwd: %v", chdirErr)
+		}
+	})
+	if err := os.Chdir(repo); err != nil {
+		t.Fatalf("os.Chdir repo: %v", err)
+	}
+	if err := runWorktreePrune([]string{"--merged"}); err == nil || !strings.Contains(err.Error(), "could not determine default base branch") {
+		t.Fatalf("expected base resolution error, got %v", err)
+	}
+}
+
 func TestDefaultMergeBaseBranchFallsBackToMain(t *testing.T) {
 	repo := initTestGitRepo(t)
 	writeFile(t, repo, "README.md", "root\n")
@@ -735,4 +1090,27 @@ func writeFile(t *testing.T, dir, relPath, content string) {
 	if err := os.WriteFile(absPath, []byte(content), 0o600); err != nil {
 		t.Fatalf("write %s: %v", absPath, err)
 	}
+}
+
+func captureStdout(t *testing.T, run func() error) (string, error) {
+	t.Helper()
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("os.Pipe: %v", err)
+	}
+	oldStdout := os.Stdout
+	os.Stdout = w
+	runErr := run()
+	os.Stdout = oldStdout
+	if err := w.Close(); err != nil {
+		t.Fatalf("close stdout writer: %v", err)
+	}
+	output, err := io.ReadAll(r)
+	if err != nil {
+		t.Fatalf("read captured stdout: %v", err)
+	}
+	if err := r.Close(); err != nil {
+		t.Fatalf("close stdout reader: %v", err)
+	}
+	return string(output), runErr
 }
