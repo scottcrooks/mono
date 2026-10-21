@@ -27,6 +27,13 @@ services:
       archetype: react
       dev: pnpm dev
 
+    - name: terminal
+      path: apps/terminal
+      description: Go terminal interface
+      kind: service
+      archetype: go-tui
+      dev: go run ./cmd/terminal
+
 local:
     namespace: argus-local
     resources:

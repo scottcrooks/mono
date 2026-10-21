@@ -14,27 +14,30 @@ type archetypeTemplate struct {
 	packageTasks map[TaskName]string
 }
 
-var taskTemplates = map[string]archetypeTemplate{
-	"go": {
-		serviceTasks: map[TaskName]string{
-			TaskBuild:     "go build ./...",
-			TaskFix:       "go fix ./...",
-			TaskFormat:    "go fmt ./...",
-			TaskLint:      "go tool golangci-lint run ./...",
-			TaskTypecheck: "go test -run=^$ ./...",
-			TaskTest:      "go test ./...",
-			TaskAudit:     "go tool govulncheck ./...",
-			TaskPackage:   "go build ./...",
-		},
-		packageTasks: map[TaskName]string{
-			TaskBuild:  "go build ./...",
-			TaskFix:    "go fix ./...",
-			TaskFormat: "go fmt ./...",
-			TaskLint:   "go tool golangci-lint run ./...",
-			TaskTest:   "go test ./...",
-			TaskAudit:  "go tool govulncheck ./...",
-		},
+var goTaskTemplate = archetypeTemplate{
+	serviceTasks: map[TaskName]string{
+		TaskBuild:     "go build ./...",
+		TaskFix:       "go fix ./...",
+		TaskFormat:    "go fmt ./...",
+		TaskLint:      "go tool golangci-lint run ./...",
+		TaskTypecheck: "go test -run=^$ ./...",
+		TaskTest:      "go test ./...",
+		TaskAudit:     "go tool govulncheck ./...",
+		TaskPackage:   "go build ./...",
 	},
+	packageTasks: map[TaskName]string{
+		TaskBuild:  "go build ./...",
+		TaskFix:    "go fix ./...",
+		TaskFormat: "go fmt ./...",
+		TaskLint:   "go tool golangci-lint run ./...",
+		TaskTest:   "go test ./...",
+		TaskAudit:  "go tool govulncheck ./...",
+	},
+}
+
+var taskTemplates = map[string]archetypeTemplate{
+	"go":     goTaskTemplate,
+	"go-tui": goTaskTemplate,
 	"react": {
 		serviceTasks: map[TaskName]string{
 			TaskBuild:     "pnpm build",
@@ -123,7 +126,7 @@ func TaskCommandForServiceWithOptions(svc Service, task TaskName, integration bo
 			return "", false, fmt.Sprintf("task %q does not support --integration", task)
 		}
 		switch svc.Archetype {
-		case "go":
+		case "go", "go-tui":
 			return "go test -v ./...", true, ""
 		case "react":
 			if ok, reason := hasReactScriptSupport(svc, "test:integration"); !ok {

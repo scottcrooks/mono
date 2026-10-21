@@ -8,41 +8,67 @@ import (
 func TestTaskTemplatesServiceVsPackage(t *testing.T) {
 	t.Parallel()
 
-	service := Service{Name: "api", Kind: "service", Archetype: "go"}
-	pkg := Service{Name: "lib", Kind: "package", Archetype: "go"}
+	for _, archetype := range []string{"go", "go-tui"} {
+		t.Run(archetype, func(t *testing.T) {
+			t.Parallel()
+			service := Service{Name: "api", Kind: "service", Archetype: archetype}
+			pkg := Service{Name: "lib", Kind: "package", Archetype: archetype}
 
-	if _, ok, _ := TaskCommandForService(service, TaskTypecheck); !ok {
-		t.Fatalf("expected go service to support typecheck")
+			if _, ok, _ := TaskCommandForService(service, TaskTypecheck); !ok {
+				t.Fatalf("expected %s service to support typecheck", archetype)
+			}
+			if _, ok, _ := TaskCommandForService(pkg, TaskTypecheck); ok {
+				t.Fatalf("expected %s package to skip typecheck", archetype)
+			}
+			if _, ok, _ := TaskCommandForService(service, TaskPackage); !ok {
+				t.Fatalf("expected %s service to support package", archetype)
+			}
+			if _, ok, _ := TaskCommandForService(pkg, TaskPackage); ok {
+				t.Fatalf("expected %s package to skip package", archetype)
+			}
+			for _, task := range []TaskName{TaskAudit, TaskFormat} {
+				if _, ok, _ := TaskCommandForService(service, task); !ok {
+					t.Fatalf("expected %s service to support %s", archetype, task)
+				}
+				if _, ok, _ := TaskCommandForService(pkg, task); !ok {
+					t.Fatalf("expected %s package to support %s", archetype, task)
+				}
+			}
+			if command, ok, _ := TaskCommandForService(service, TaskFix); !ok || command != "go fix ./..." {
+				t.Fatalf("expected %s service to support internal fix, got %q supported=%v", archetype, command, ok)
+			}
+			if command, ok, _ := TaskCommandForService(pkg, TaskFix); !ok || command != "go fix ./..." {
+				t.Fatalf("expected %s package to support internal fix, got %q supported=%v", archetype, command, ok)
+			}
+			if _, ok, _ := TaskCommandForService(service, TaskDeploy); ok {
+				t.Fatalf("expected %s service to skip deploy until deploy template exists", archetype)
+			}
+		})
 	}
-	if _, ok, _ := TaskCommandForService(pkg, TaskTypecheck); ok {
-		t.Fatalf("expected go package to skip typecheck")
+}
+
+func TestGoTUIIntegrationTestMatchesGo(t *testing.T) {
+	t.Parallel()
+
+	for _, archetype := range []string{"go", "go-tui"} {
+		got, ok, reason := TaskCommandForServiceWithOptions(Service{Archetype: archetype}, TaskTest, true)
+		if !ok || got != "go test -v ./..." {
+			t.Fatalf("unexpected %s integration command: got %q supported=%v reason=%q", archetype, got, ok, reason)
+		}
 	}
-	if _, ok, _ := TaskCommandForService(service, TaskPackage); !ok {
-		t.Fatalf("expected go service to support package")
-	}
-	if _, ok, _ := TaskCommandForService(pkg, TaskPackage); ok {
-		t.Fatalf("expected go package to skip package")
-	}
-	if _, ok, _ := TaskCommandForService(service, TaskAudit); !ok {
-		t.Fatalf("expected go service to support audit")
-	}
-	if _, ok, _ := TaskCommandForService(pkg, TaskAudit); !ok {
-		t.Fatalf("expected go package to support audit")
-	}
-	if _, ok, _ := TaskCommandForService(service, TaskFormat); !ok {
-		t.Fatalf("expected go service to support format")
-	}
-	if _, ok, _ := TaskCommandForService(pkg, TaskFormat); !ok {
-		t.Fatalf("expected go package to support format")
-	}
-	if command, ok, _ := TaskCommandForService(service, TaskFix); !ok || command != "go fix ./..." {
-		t.Fatalf("expected go service to support internal fix, got %q supported=%v", command, ok)
-	}
-	if command, ok, _ := TaskCommandForService(pkg, TaskFix); !ok || command != "go fix ./..." {
-		t.Fatalf("expected go package to support internal fix, got %q supported=%v", command, ok)
-	}
-	if _, ok, _ := TaskCommandForService(service, TaskDeploy); ok {
-		t.Fatalf("expected go service to skip deploy until deploy template exists")
+}
+
+func TestGoTUITaskCommandsMatchGo(t *testing.T) {
+	t.Parallel()
+
+	for _, kind := range []string{"service", "package"} {
+		for _, task := range []TaskName{TaskBuild, TaskFix, TaskFormat, TaskLint, TaskTypecheck, TaskTest, TaskAudit, TaskPackage} {
+			goCommand, goOK, goReason := TaskCommandForService(Service{Kind: kind, Archetype: "go"}, task)
+			tuiCommand, tuiOK, tuiReason := TaskCommandForService(Service{Kind: kind, Archetype: "go-tui"}, task)
+			if goOK != tuiOK || goCommand != tuiCommand {
+				t.Fatalf("%s %s differs: go=(%q, %v, %q) go-tui=(%q, %v, %q)", kind, task, goCommand, goOK, goReason, tuiCommand, tuiOK, tuiReason)
+			}
+		}
 	}
 }
 

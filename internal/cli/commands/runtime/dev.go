@@ -41,11 +41,26 @@ func (c *devCommand) Run(args []string) error {
 		return nil
 	}
 
+	selection, err := classifyDevServices(servicesToRun)
+	if err != nil {
+		return err
+	}
+	if err := preflightDevSelection(selection, os.Stdin, os.Stdout, os.Stderr); err != nil {
+		return err
+	}
+
 	// Auto-start any infrastructure dependencies that aren't already running
 	if err := ensureInfraDeps(config, servicesToRun); err != nil {
 		return fmt.Errorf("failed to start infrastructure dependencies: %w", err)
 	}
+	if selection.tui != nil {
+		return runTUIDev(selection.background, *selection.tui)
+	}
+	return runStreamingDev(servicesToRun)
+}
 
+func runStreamingDev(servicesToRun []Service) error {
+	p := output.DefaultPrinter()
 	// Create context for graceful shutdown
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -53,6 +68,8 @@ func (c *devCommand) Run(args []string) error {
 	// Handle signals for graceful shutdown
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
+	stopSignalWatcher := make(chan struct{})
+	signalWatcherDone := make(chan struct{})
 
 	// WaitGroup to track all service goroutines
 	var wg sync.WaitGroup
@@ -73,14 +90,21 @@ func (c *devCommand) Run(args []string) error {
 
 	// Wait for shutdown signal in separate goroutine
 	go func() {
-		<-sigChan
-		p.Blank()
-		p.StepWarn("dev", "Shutting down all services...")
-		cancel()
+		defer close(signalWatcherDone)
+		select {
+		case <-sigChan:
+			p.Blank()
+			p.StepWarn("dev", "Shutting down all services...")
+			cancel()
+		case <-stopSignalWatcher:
+		}
 	}()
 
 	// Wait for all services to complete
 	wg.Wait()
+	close(stopSignalWatcher)
+	<-signalWatcherDone
+	signal.Stop(sigChan)
 
 	// Check for errors
 	close(errChan)
@@ -357,7 +381,7 @@ func defaultDevCommandForService(svc Service) (string, bool) {
 	}
 
 	switch svc.Archetype {
-	case "go":
+	case "go", "go-tui":
 		return "go run github.com/air-verse/air@latest -c .air.toml", true
 	case "react":
 		return "pnpm dev", true

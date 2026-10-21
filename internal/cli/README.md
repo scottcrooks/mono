@@ -25,6 +25,22 @@
   - interactive terminals use semantic color and symbols
   - non-interactive/CI/`NO_COLOR=1` runs emit plain deterministic text
 
+## Dev TUI services
+
+Services with the `ts-ink` or `go-tui` archetype use their existing `dev` command
+as an interactive terminal application. `go-tui` inherits Go's default Air
+command and Go task and dependency-install behavior. Existing `commands.dev` or
+`dev` values override that default.
+
+Select at most one TUI service with `mono dev`. Its process takes over the
+current terminal while other selected services run in the background. All
+three standard streams must be terminals. Background output and session
+lifecycle messages are retained in a private `.cache/dev/session-*.log` file;
+mono prints the log path before takeover and after cleanup. On exit or
+interruption, mono stops the background process groups and waits up to five
+seconds before forcing remaining processes to stop. Infrastructure started for
+the session continues to persist after `mono dev` exits.
+
 ## Adding a new command
 
 1. Add command implementation in the appropriate `commands/<purpose>/` package.

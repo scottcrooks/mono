@@ -40,6 +40,31 @@ func TestDependencyInstallTargetsForServicesDedupesByResolvedRoot(t *testing.T) 
 	}
 }
 
+func TestDependencyInstallTargetsDedupesGoAndGoTUI(t *testing.T) {
+	repo := t.TempDir()
+	withWorkingDir(t, repo)
+	writeFile(t, repo, "go.mod", "module example.com/mono\n")
+
+	targets, err := DependencyInstallTargetsForServices(&Config{
+		Services: []Service{
+			{Name: "api", Path: "apps/api", Archetype: "go"},
+			{Name: "terminal", Path: "apps/terminal", Archetype: "go-tui"},
+		},
+	}, []string{"api", "terminal"})
+	if err != nil {
+		t.Fatalf("DependencyInstallTargetsForServices returned error: %v", err)
+	}
+	want := []DependencyInstallTarget{{
+		Archetype: "go",
+		Dir:       ".",
+		Command:   "go mod download",
+		Services:  []string{"api", "terminal"},
+	}}
+	if !reflect.DeepEqual(targets, want) {
+		t.Fatalf("unexpected shared Go install target: got %+v want %+v", targets, want)
+	}
+}
+
 func TestDependencyInstallTargetsForServicesDoesNotShareReactWithoutWorkspace(t *testing.T) {
 	repo := t.TempDir()
 	withWorkingDir(t, repo)

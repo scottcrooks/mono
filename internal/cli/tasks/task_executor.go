@@ -326,7 +326,7 @@ func commandForExecution(svc Service, node TaskNode, command string, affectedFil
 	if !opts.NoCache {
 		return trimmed
 	}
-	if node.Task != TaskTest || svc.Archetype != "go" {
+	if node.Task != TaskTest || (svc.Archetype != "go" && svc.Archetype != "go-tui") {
 		return trimmed
 	}
 	if !strings.HasPrefix(trimmed, "go test") || strings.Contains(trimmed, "-count=") {
@@ -336,7 +336,7 @@ func commandForExecution(svc Service, node TaskNode, command string, affectedFil
 }
 
 func appendFormatFilesToCommand(svc Service, node TaskNode, command string, affectedFiles []string) string {
-	if node.Task != TaskFormat || len(affectedFiles) == 0 || svc.Archetype == "go" {
+	if node.Task != TaskFormat || len(affectedFiles) == 0 || svc.Archetype == "go" || svc.Archetype == "go-tui" {
 		return command
 	}
 

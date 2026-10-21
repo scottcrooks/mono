@@ -89,6 +89,12 @@ func TestResolveDevCommandArchetypeDefaults(t *testing.T) {
 			ok:   true,
 		},
 		{
+			name: "go-tui",
+			svc:  Service{Name: "sonatad", Archetype: "go-tui"},
+			want: "go run github.com/air-verse/air@latest -c .air.toml",
+			ok:   true,
+		},
+		{
 			name: "react",
 			svc:  Service{Name: "mallos", Archetype: "react"},
 			want: "pnpm dev",
@@ -138,15 +144,28 @@ func TestResolveDevCommandArchetypeDefaults(t *testing.T) {
 func TestResolveDevCommandNoDefaultForPackageKind(t *testing.T) {
 	t.Parallel()
 
-	svc := Service{
-		Name:      "polaris",
-		Kind:      "package",
-		Archetype: "go",
+	for _, archetype := range []string{"go", "go-tui"} {
+		svc := Service{Name: "polaris", Kind: "package", Archetype: archetype}
+		if _, ok := resolveDevCommand(svc); ok {
+			t.Fatalf("expected %s package kind to not receive inferred dev default", archetype)
+		}
 	}
+}
 
-	_, ok := resolveDevCommand(svc)
-	if ok {
-		t.Fatal("expected package kind to not receive inferred dev default")
+func TestResolveGoTUIDevCommandOverridesDefault(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		svc  Service
+		want string
+	}{
+		{svc: Service{Name: "sonatad", Archetype: "go-tui", Dev: "go run ./cmd/custom"}, want: "go run ./cmd/custom"},
+		{svc: Service{Name: "sonatad", Archetype: "go-tui", Commands: map[string]string{"dev": "go run ./cmd/command"}}, want: "go run ./cmd/command"},
+	} {
+		got, ok := resolveDevCommand(tc.svc)
+		if !ok || got != tc.want {
+			t.Fatalf("unexpected command: got %q supported=%v want %q", got, ok, tc.want)
+		}
 	}
 }
 

@@ -7,12 +7,12 @@ import (
 )
 
 type TaskRunOptions struct {
-	NoCache      bool
-	Concurrency  int
-	Integration  bool
-	BaseRef      string
-	All          bool
-	BufferOutput bool
+	NoCache           bool
+	Concurrency       int
+	Integration       bool
+	BaseRef           string
+	All               bool
+	BufferOutput      bool
 	ContinueOnFailure bool
 }
 

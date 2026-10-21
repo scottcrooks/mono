@@ -161,7 +161,7 @@ func PrintDependencyInstallSummary(results []DependencyInstallResult) {
 
 func dependencyInstallTargetForService(svc Service) (DependencyInstallTarget, bool, error) {
 	switch svc.Archetype {
-	case "go":
+	case "go", "go-tui":
 		dir, ok, err := findNearestRepoFileDir(svc.Path, "go.mod")
 		if err != nil || !ok {
 			return DependencyInstallTarget{}, ok, err

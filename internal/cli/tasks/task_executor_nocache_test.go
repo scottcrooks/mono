@@ -5,12 +5,14 @@ import "testing"
 func TestCommandForExecutionAddsNoCacheForGoTest(t *testing.T) {
 	t.Parallel()
 
-	svc := Service{Name: "pythia", Archetype: "go"}
-	node := TaskNode{Service: "pythia", Task: TaskTest}
+	for _, archetype := range []string{"go", "go-tui"} {
+		svc := Service{Name: "pythia", Archetype: archetype}
+		node := TaskNode{Service: "pythia", Task: TaskTest}
 
-	got := commandForExecution(svc, node, "go test ./...", nil, TaskRunOptions{NoCache: true})
-	if got != "go test ./... -count=1" {
-		t.Fatalf("unexpected command: %q", got)
+		got := commandForExecution(svc, node, "go test ./...", nil, TaskRunOptions{NoCache: true})
+		if got != "go test ./... -count=1" {
+			t.Fatalf("unexpected %s command: %q", archetype, got)
+		}
 	}
 }
 
@@ -41,12 +43,14 @@ func TestCommandForExecutionNoopWhenCountAlreadySet(t *testing.T) {
 func TestCommandForExecutionFormatsAffectedGoServiceByPackage(t *testing.T) {
 	t.Parallel()
 
-	svc := Service{Name: "pythia", Archetype: "go"}
-	node := TaskNode{Service: "pythia", Task: TaskFormat}
+	for _, archetype := range []string{"go", "go-tui"} {
+		svc := Service{Name: "pythia", Archetype: archetype}
+		node := TaskNode{Service: "pythia", Task: TaskFormat}
 
-	got := commandForExecution(svc, node, "go fmt ./...", []string{"main.go", "migrations/000001_create_items.sql"}, TaskRunOptions{})
-	if got != "go fmt ./..." {
-		t.Fatalf("unexpected command: %q", got)
+		got := commandForExecution(svc, node, "go fmt ./...", []string{"main.go", "migrations/000001_create_items.sql"}, TaskRunOptions{})
+		if got != "go fmt ./..." {
+			t.Fatalf("unexpected %s command: %q", archetype, got)
+		}
 	}
 }
 
