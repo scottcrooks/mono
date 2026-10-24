@@ -20,6 +20,54 @@ func TestRunHelpFlag(t *testing.T) {
 	}
 }
 
+func TestTelemetryDispatchOutsideProject(t *testing.T) {
+	t.Chdir(t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("PATH", "")
+	stdout := captureStdout(t, func() {
+		if code := Run([]string{"mono", "telemetry", "env", "--service-name=worker"}); code != 0 {
+			t.Fatalf("offline env failed: %d", code)
+		}
+	})
+	if !strings.HasPrefix(stdout, "export OTEL_EXPORTER_OTLP_ENDPOINT=") || !strings.Contains(stdout, "export OTEL_SERVICE_NAME='worker'\n") {
+		t.Fatalf("offline env output includes noise: %q", stdout)
+	}
+	for _, args := range [][]string{
+		{"mono", "telemetry", "--help"},
+		{"mono", "telemetry", "doctor", "--help"},
+	} {
+		stdout := captureStdout(t, func() {
+			if code := Run(args); code != 0 {
+				t.Fatalf("help failed: %v: %d", args, code)
+			}
+		})
+		if !strings.Contains(stdout, "mono telemetry") {
+			t.Fatalf("unexpected help: %q", stdout)
+		}
+	}
+	for _, tc := range []struct {
+		args []string
+		want string
+	}{
+		{[]string{"mono", "telemetry", "bogus"}, "unknown subcommand"},
+		{[]string{"mono", "telemetry", "up", "--storage-size=0Gi"}, "positive integer"},
+		{[]string{"mono", "telemetry", "doctor", "--check"}, "telemetry tools"},
+		{[]string{"mono", "telemetry", "up"}, "telemetry tools"},
+		{[]string{"mono", "telemetry", "status"}, "telemetry tools"},
+		{[]string{"mono", "telemetry", "connect"}, "telemetry tools"},
+		{[]string{"mono", "telemetry", "down"}, "telemetry tools"},
+	} {
+		stderr := captureStderr(t, func() {
+			if code := Run(tc.args); code != 1 {
+				t.Fatalf("expected failure for %v, got %d", tc.args, code)
+			}
+		})
+		if !strings.Contains(stderr, tc.want) || strings.Contains(stderr, "services.yaml") {
+			t.Fatalf("unexpected error for %v: %q", tc.args, stderr)
+		}
+	}
+}
+
 func TestRunVersionFlag(t *testing.T) {
 	prevVersion, prevCommit, prevDate := version.Version, version.Commit, version.Date
 	version.Version = "v1.2.3"
@@ -90,6 +138,7 @@ func TestRegisterCommandsExpectedSet(t *testing.T) {
 		"metadata",
 		"migrate",
 		"status",
+		"telemetry",
 		"worktree",
 	}
 	got := registry.Names()

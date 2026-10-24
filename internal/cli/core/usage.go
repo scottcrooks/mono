@@ -14,6 +14,7 @@ func PrintUsage() {
 	p.Summary("  check [--base <ref>] [--all] [--no-cache] [--no-buffer] [--concurrency N]  Run pending fix/format/lint/typecheck/test for selected services")
 	p.Summary("  list                  List all services and their commands")
 	p.Summary("  status [--base <ref>] Show changed/impacted services and planned check tasks")
+	p.Summary("  telemetry <subcommand> Manage shared local telemetry (see: mono telemetry --help)")
 	p.Summary("  dev [service...]      Run services with hot reload (concurrent)")
 	p.Summary("  doctor                Check environment and validate services manifest policy")
 	p.Summary("  hosts <subcommand>    Manage local hosts entries (see: mono hosts)")

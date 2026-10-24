@@ -5,7 +5,7 @@
 - `commands/`: top-level user commands organized by purpose.
   - `insights/`: `affected`, `status`
   - `quality/`: `check`
-  - `runtime/`: `dev`, `hosts`, `infra`, `migrate`
+  - `runtime/`: `dev`, `hosts`, `infra`, `migrate`, `telemetry`
   - `workflow/`: `doctor`, `worktree`
   - `meta/`: `metadata`, `list`
 - `tasks/`: orchestrated task engine (`build|lint|typecheck|test|audit|package|deploy`).
@@ -42,6 +42,12 @@ seconds before forcing remaining processes to stop. Infrastructure started for
 the session continues to persist after `mono dev` exits.
 
 ## Adding a new command
+
+Shared local observability is managed by `mono telemetry`; see
+[the telemetry workflow](../../docs/telemetry.md). It has its own global configuration
+and fixed namespace, independent of project manifests and `mono infra` lifecycle.
+`make test-telemetry-integration` runs the explicitly gated disposable kind test;
+the default test suite never contacts a live cluster.
 
 1. Add command implementation in the appropriate `commands/<purpose>/` package.
 2. Register it via the package-local `registerCommand("name", cmd)`.

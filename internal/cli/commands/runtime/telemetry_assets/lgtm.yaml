@@ -1,0 +1,103 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: mono-telemetry
+  labels:
+    app.kubernetes.io/managed-by: mono
+    app.kubernetes.io/part-of: mono-telemetry
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: lgtm
+  namespace: mono-telemetry
+  labels:
+    app.kubernetes.io/managed-by: mono
+    app.kubernetes.io/part-of: mono-telemetry
+spec:
+  accessModes: [ReadWriteOnce]
+  storageClassName: standard
+  resources:
+    requests:
+      storage: 10Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: lgtm
+  namespace: mono-telemetry
+  labels:
+    app.kubernetes.io/managed-by: mono
+    app.kubernetes.io/part-of: mono-telemetry
+spec:
+  type: ClusterIP
+  selector:
+    app: mono-telemetry-lgtm
+  ports:
+    - {name: grafana, port: 3000, targetPort: 3000}
+    - {name: loki, port: 3100, targetPort: 3100}
+    - {name: tempo, port: 3200, targetPort: 3200}
+    - {name: otlp-grpc, port: 4317, targetPort: 4317}
+    - {name: otlp-http, port: 4318, targetPort: 4318}
+    - {name: prometheus, port: 9090, targetPort: 9090}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: lgtm
+  namespace: mono-telemetry
+  labels:
+    app.kubernetes.io/managed-by: mono
+    app.kubernetes.io/part-of: mono-telemetry
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: mono-telemetry-lgtm
+  template:
+    metadata:
+      labels:
+        app: mono-telemetry-lgtm
+        app.kubernetes.io/managed-by: mono
+        app.kubernetes.io/part-of: mono-telemetry
+    spec:
+      terminationGracePeriodSeconds: 60
+      containers:
+        - name: lgtm
+          image: grafana/otel-lgtm:0.29.0
+          ports:
+            - {name: grafana, containerPort: 3000}
+            - {name: loki, containerPort: 3100}
+            - {name: tempo, containerPort: 3200}
+            - {name: otlp-grpc, containerPort: 4317}
+            - {name: otlp-http, containerPort: 4318}
+            - {name: prometheus, containerPort: 9090}
+          resources:
+            requests: {cpu: 500m, memory: 1Gi}
+            limits: {cpu: '2', memory: 4Gi}
+          volumeMounts:
+            - {name: data, mountPath: /data}
+          startupProbe:
+            exec:
+              command: [/bin/sh, -c, 'test -f /tmp/ready']
+            periodSeconds: 5
+            failureThreshold: 60
+          readinessProbe:
+            exec:
+              command:
+                - /bin/sh
+                - -c
+                - >-
+                  curl -fsS --max-time 2 http://127.0.0.1:3000/api/health >/dev/null &&
+                  curl -fsS --max-time 2 http://127.0.0.1:3100/ready >/dev/null &&
+                  curl -fsS --max-time 2 http://127.0.0.1:3200/ready >/dev/null &&
+                  curl -fsS --max-time 2 http://127.0.0.1:9090/-/ready >/dev/null &&
+                  curl -fsS --max-time 2 http://127.0.0.1:13133/ready >/dev/null
+            periodSeconds: 10
+            timeoutSeconds: 12
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: lgtm

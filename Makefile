@@ -9,7 +9,7 @@ export GOMODCACHE := $(GOPATH)/pkg/mod
 export GOTOOLCHAIN ?= auto
 GOFILES := $(shell find . -type f -name '*.go' -not -path './vendor/*' -not -path './.cache/*')
 MONO_SRCS := $(shell find cmd/mono internal -type f -name '*.go')
-MONO_EXTRA_DEPS := $(wildcard services.yaml)
+MONO_EXTRA_DEPS := $(wildcard services.yaml internal/cli/commands/runtime/telemetry_assets/*)
 VERSION ?= $(shell \
 	semver_tag=$$(git tag --points-at HEAD --list 'v*' | sort -V | tail -n1); \
 	if [ -n "$$semver_tag" ]; then \
@@ -23,7 +23,7 @@ COMMIT ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo none)
 DATE ?= $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
 LDFLAGS := -X github.com/scottcrooks/mono/internal/version.Version=$(VERSION) -X github.com/scottcrooks/mono/internal/version.Commit=$(COMMIT) -X github.com/scottcrooks/mono/internal/version.Date=$(DATE)
 
-.PHONY: build test lint fix fmt fmt-check install-local smoke check
+.PHONY: build test lint fix fmt fmt-check install-local smoke check test-telemetry-integration
 
 build: bin/$(BINARY)
 
@@ -61,3 +61,7 @@ smoke: build
 	./bin/$(BINARY) metadata >/dev/null
 
 check: fmt-check lint test build
+
+# This test owns a disposable kind cluster and private kubeconfig/config directories.
+test-telemetry-integration: build
+	MONO_TELEMETRY_E2E=1 MONO_TELEMETRY_BINARY=$(CURDIR)/bin/$(BINARY) $(GO) test ./internal/cli/commands/runtime -run '^TestTelemetryE2E$$' -count=1 -v -timeout=20m
