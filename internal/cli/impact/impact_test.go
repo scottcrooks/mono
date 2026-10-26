@@ -111,6 +111,24 @@ func TestChangedFilesIncludesUntrackedFiles(t *testing.T) {
 	}
 }
 
+func TestChangedFilesExcludesRootTimingArtifacts(t *testing.T) {
+	repo := initImpactRepoWithFeatureChange(t)
+	withWorkingDir(t, repo)
+	// The fixture's feature commit is the only pre-existing change. Generated
+	// timing state must not add an impacted service or format target.
+	for _, name := range []string{".mono", ".mono.lock", ".mono.tmp-test"} {
+		writeFile(t, repo, name, "generated\n")
+	}
+	got, err := changedFiles("main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"libs/lib/lib.go"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("timing artifacts leaked into changed files: got %v want %v", got, want)
+	}
+}
+
 func TestChangedFilesFallsBackToLocalTrackedAndUntrackedDiffs(t *testing.T) {
 	repo := initImpactRepoWithFeatureChange(t)
 	detachHeadWithoutBaseRefs(t, repo)

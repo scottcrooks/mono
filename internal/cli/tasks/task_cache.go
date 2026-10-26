@@ -11,6 +11,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/scottcrooks/mono/internal/cli/core"
 )
 
 var cacheEnvWhitelist = []string{"CI", "GOARCH", "GOOS", "NODE_ENV"}
@@ -110,6 +112,9 @@ func hashTree(h io.Writer, root string) error {
 		return err
 	}
 
+	projectRoot, rootAbsErr := filepath.Abs(root)
+	cwd, cwdErr := os.Getwd()
+	filterProjectArtifacts := rootAbsErr == nil && cwdErr == nil && filepath.Clean(projectRoot) == filepath.Clean(cwd)
 	return filepath.WalkDir(root, func(path string, d os.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
@@ -124,6 +129,9 @@ func hashTree(h io.Writer, root string) error {
 		rel, err := filepath.Rel(root, path)
 		if err != nil {
 			return err
+		}
+		if filterProjectArtifacts && core.IsMonoTimingArtifact(rel) {
+			return nil
 		}
 		if _, err := io.WriteString(h, filepath.ToSlash(rel)+"\n"); err != nil {
 			return err

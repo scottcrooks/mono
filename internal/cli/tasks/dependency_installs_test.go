@@ -1,12 +1,16 @@
 package tasks
 
 import (
+	"bytes"
 	"context"
 	"io"
 	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/scottcrooks/mono/internal/cli/output"
 )
 
 func TestDependencyInstallTargetsForServicesDedupesByResolvedRoot(t *testing.T) {
@@ -266,5 +270,37 @@ func TestRunDependencyInstallsWithConfigBufferedReplaysFailure(t *testing.T) {
 	}
 	if !strings.Contains(stderr, "[deps:go] failed") {
 		t.Fatalf("expected failure line, got %q", stderr)
+	}
+}
+
+func TestRunDependencyInstallsProgressClearsForFailureReplay(t *testing.T) {
+	repo := t.TempDir()
+	withWorkingDir(t, repo)
+	writeFile(t, repo, "go.mod", "module example.com/mono\n")
+	original := runDependencyInstallCommand
+	runDependencyInstallCommand = func(_ context.Context, _ DependencyInstallTarget, stdoutWriter, stderrWriter io.Writer) error {
+		_, _ = io.WriteString(stdoutWriter, "install stdout transcript\n")
+		_, _ = io.WriteString(stderrWriter, "install stderr transcript\n")
+		return io.EOF
+	}
+	t.Cleanup(func() { runDependencyInstallCommand = original })
+	var progressOutput bytes.Buffer
+	line := output.NewProgressLine(output.ProgressOptions{Writer: &progressOutput, Mode: output.ModeInteractive, IsTTY: func() bool { return true }, Term: func() string { return "xterm" }, Width: func() (int, error) { return 80, nil }, TickInterval: time.Hour})
+	line.Update(output.ProgressView{Kind: output.ProgressInstall})
+	stdout, stderr := captureStreams(t, func() {
+		results, err := RunDependencyInstallsWithConfigBufferedProgress(&Config{Services: []Service{{Name: "api", Path: "apps/api", Archetype: "go"}}}, []string{"api"}, line)
+		if err == nil || len(results) != 1 || results[0].Status != TaskStatusFailed {
+			t.Fatalf("unexpected install result: %+v, %v", results, err)
+		}
+	})
+	line.Close()
+	if !strings.Contains(stdout, "install stdout transcript") || !strings.Contains(stderr, "install stderr transcript") {
+		t.Fatalf("install transcript missing: stdout=%q stderr=%q", stdout, stderr)
+	}
+	if !strings.Contains(progressOutput.String(), "\x1b[2K") {
+		t.Fatalf("install progress line was not cleared around replay: %q", progressOutput.String())
+	}
+	if !strings.HasSuffix(progressOutput.String(), "\n") {
+		t.Fatalf("progress line was not terminated on close: %q", progressOutput.String())
 	}
 }

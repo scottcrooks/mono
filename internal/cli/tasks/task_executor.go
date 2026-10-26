@@ -23,6 +23,8 @@ var runTaskRequestWithConfig = RunOrchestratedTaskRequestWithConfig
 type taskExecutor struct {
 	cache   taskCache
 	printer output.Printer
+	stdout  io.Writer
+	stderr  io.Writer
 }
 
 type readyTask struct {
@@ -90,18 +92,14 @@ func RunOrchestratedTask(command string, args []string) error {
 }
 
 func RunOrchestratedTaskRequestWithConfig(cfg *Config, req TaskRequest, opts TaskRunOptions) ([]TaskRunResult, error) {
-	resolution, err := resolveTaskRequest(cfg, req)
+	if opts.PreparedRun != nil {
+		return RunPreparedTaskRun(opts.PreparedRun, opts)
+	}
+	prepared, err := PrepareTaskRun(cfg, req)
 	if err != nil {
 		return nil, err
 	}
-
-	graph, err := buildTaskGraph(cfg, resolution.Nodes)
-	if err != nil {
-		return nil, err
-	}
-
-	executor := newTaskExecutor()
-	return executor.execute(context.Background(), graph, opts)
+	return RunPreparedTaskRun(prepared, opts)
 }
 
 func (e taskExecutor) execute(ctx context.Context, graph *taskGraph, opts TaskRunOptions) ([]TaskRunResult, error) {
@@ -114,8 +112,9 @@ func (e taskExecutor) execute(ctx context.Context, graph *taskGraph, opts TaskRu
 	for node, resolved := range graph.nodes {
 		inDegree[node] = graph.inDegree[node]
 		if resolved.SkipReason != "" {
-			e.printer.StepWarn(node.String(), "skipped: "+resolved.SkipReason)
+			opts.Progress.Print(func() { e.printer.StepWarn(node.String(), "skipped: "+resolved.SkipReason) })
 			result := TaskRunResult{Node: node, Status: TaskStatusSkipped, SkipReason: resolved.SkipReason}
+			opts.Progress.settle(opts.progressIDs[node])
 			results = append(results, result)
 			resultByNode[node] = result
 			continue
@@ -179,6 +178,7 @@ func (e taskExecutor) execute(ctx context.Context, graph *taskGraph, opts TaskRu
 		for _, result := range preBatch {
 			results = append(results, result)
 			resultByNode[result.Node] = result
+			opts.Progress.settle(opts.progressIDs[result.Node])
 		}
 		for _, result := range batch {
 			results = append(results, result)
@@ -202,8 +202,9 @@ func (e taskExecutor) execute(ctx context.Context, graph *taskGraph, opts TaskRu
 		}
 		if failed && !opts.ContinueOnFailure && !continueOnFailure(ready[0].Node.Task) {
 			for node := range remaining {
-				e.printer.StepWarn(node.String(), "skipped: blocked by earlier task failure")
+				opts.Progress.Print(func() { e.printer.StepWarn(node.String(), "skipped: blocked by earlier task failure") })
 				result := TaskRunResult{Node: node, Status: TaskStatusSkipped, SkipReason: "blocked by earlier task failure"}
+				opts.Progress.settle(opts.progressIDs[node])
 				results = append(results, result)
 				delete(remaining, node)
 			}
@@ -251,6 +252,8 @@ func (e taskExecutor) runReadyBatch(ctx context.Context, ready []readyTask, opts
 
 func (e taskExecutor) runNode(ctx context.Context, task readyTask, opts TaskRunOptions) TaskRunResult {
 	node := task.resolved.Node
+	progressID := opts.progressIDs[node]
+	defer opts.Progress.settle(progressID)
 	printer := e.printer
 	var stdoutCapture *bytes.Buffer
 	var stderrCapture *bytes.Buffer
@@ -264,52 +267,70 @@ func (e taskExecutor) runNode(ctx context.Context, task readyTask, opts TaskRunO
 		stderrWriter = stderrCapture
 	}
 	cmdString := commandForExecution(task.resolved.Service, node, task.resolved.Command, task.resolved.AffectedFiles, opts)
-	if !taskUsesCache(node.Task) {
-		if err := runTaskCommand(ctx, printer, task.resolved.Service, node, cmdString, stdoutWriter, stderrWriter); err != nil {
-			e.replayTaskTranscript(stdoutCapture, stderrCapture)
+	usesCache := taskUsesCache(node.Task)
+	cacheKey := task.cacheKey
+	if usesCache {
+		entry, hit, err := e.cache.load(cacheKey)
+		if err != nil {
 			return TaskRunResult{Node: node, Status: TaskStatusFailed, Err: err}
 		}
-		return TaskRunResult{Node: node, Status: TaskStatusSucceeded}
+		if !opts.NoCache && hit && entry.Key != "" {
+			opts.Progress.Print(func() { printer.Summary(fmt.Sprintf("[cached] [%s] skipped", node.String())) })
+			return TaskRunResult{Node: node, Status: TaskStatusSkipped, SkipReason: "cached", Cached: true}
+		}
+		if reason := cacheMissReason(opts.NoCache, hit); reason != "" {
+			printer.StepWarn(node.String(), "cache miss: "+reason)
+		}
 	}
 
-	cacheKey := task.cacheKey
-	entry, hit, err := e.cache.load(cacheKey)
-	if err != nil {
-		return TaskRunResult{Node: node, Status: TaskStatusFailed, Err: err}
-	}
-	if !opts.NoCache && hit && entry.Key != "" {
-		printer.Summary(fmt.Sprintf("[cached] [%s] skipped", node.String()))
-		return TaskRunResult{Node: node, Status: TaskStatusSkipped, SkipReason: "cached", Cached: true}
-	}
-	if reason := cacheMissReason(opts.NoCache, hit); reason != "" {
-		printer.StepWarn(node.String(), "cache miss: "+reason)
-	}
-
-	if err := runTaskCommand(ctx, printer, task.resolved.Service, node, cmdString, stdoutWriter, stderrWriter); err != nil {
-		e.replayTaskTranscript(stdoutCapture, stderrCapture)
+	if err := runTaskCommand(ctx, printer, task.resolved.Service, node, cmdString, stdoutWriter, stderrWriter, opts); err != nil {
+		e.replayTaskTranscript(stdoutCapture, stderrCapture, opts.Progress)
 		return TaskRunResult{Node: node, Status: TaskStatusFailed, Err: err}
 	}
 
-	storeErr := e.cache.store(taskCacheEntry{
-		Key:       cacheKey,
-		Service:   node.Service,
-		Task:      node.Task,
-		CreatedAt: time.Now().UTC(),
-	})
-	if storeErr != nil {
-		fmt.Fprintf(os.Stderr, "[%s] warning: failed to write cache entry: %v\n", node, storeErr)
+	if usesCache {
+		storeErr := e.cache.store(taskCacheEntry{
+			Key:       cacheKey,
+			Service:   node.Service,
+			Task:      node.Task,
+			CreatedAt: time.Now().UTC(),
+		})
+		if storeErr != nil {
+			opts.Progress.Print(func() {
+				fmt.Fprintf(e.stderrWriter(), "[%s] warning: failed to write cache entry: %v\n", node, storeErr)
+			})
+		}
 	}
 
 	return TaskRunResult{Node: node, Status: TaskStatusSucceeded}
 }
 
-func (e taskExecutor) replayTaskTranscript(stdoutCapture, stderrCapture *bytes.Buffer) {
-	if stdoutCapture != nil && stdoutCapture.Len() > 0 {
-		_, _ = io.Copy(os.Stdout, stdoutCapture)
+func (e taskExecutor) replayTaskTranscript(stdoutCapture, stderrCapture *bytes.Buffer, progress *TaskProgressSession) {
+	print := func() {
+		stdout := e.stdoutWriter()
+		stderr := e.stderrWriter()
+		if stdoutCapture != nil && stdoutCapture.Len() > 0 {
+			_, _ = io.Copy(stdout, stdoutCapture)
+		}
+		if stderrCapture != nil && stderrCapture.Len() > 0 {
+			_, _ = io.Copy(stderr, stderrCapture)
+		}
 	}
-	if stderrCapture != nil && stderrCapture.Len() > 0 {
-		_, _ = io.Copy(os.Stderr, stderrCapture)
+	progress.Print(print)
+}
+
+func (e taskExecutor) stdoutWriter() io.Writer {
+	if e.stdout != nil {
+		return e.stdout
 	}
+	return os.Stdout
+}
+
+func (e taskExecutor) stderrWriter() io.Writer {
+	if e.stderr != nil {
+		return e.stderr
+	}
+	return os.Stderr
 }
 
 func taskUsesCache(task TaskName) bool {
@@ -366,7 +387,7 @@ func composeExecutionCacheKey(baseKey string, dependencyKeys []string) string {
 	return hex.EncodeToString(h.Sum(nil))
 }
 
-func runTaskCommand(ctx context.Context, printer output.Printer, svc Service, node TaskNode, cmdString string, stdoutWriter, stderrWriter io.Writer) error {
+func runTaskCommand(ctx context.Context, printer output.Printer, svc Service, node TaskNode, cmdString string, stdoutWriter, stderrWriter io.Writer, opts TaskRunOptions) error {
 	printer.StepStart(node.String(), "start")
 	absPath, err := filepath.Abs(svc.Path)
 	if err != nil {
@@ -389,9 +410,20 @@ func runTaskCommand(ctx context.Context, printer output.Printer, svc Service, no
 	cmd.Stderr = output.NewPrefixWriter(fmt.Sprintf("[%s]", node), stderrWriter)
 	cmd.Stdin = os.Stdin
 
-	if err := cmd.Run(); err != nil {
+	commandStartedAt := time.Now()
+	if err := cmd.Start(); err != nil {
 		printer.StepErr(node.String(), "failed")
 		return err
+	}
+	progressID := opts.progressIDs[node]
+	opts.Progress.start(progressID)
+	waitErr := cmd.Wait()
+	duration := time.Since(commandStartedAt)
+	opts.Progress.settle(progressID)
+	opts.Progress.executed(taskTimingKey{Service: node.Service, Task: string(node.Task), Integration: opts.Integration}, duration)
+	if waitErr != nil {
+		printer.StepErr(node.String(), "failed")
+		return waitErr
 	}
 	printer.StepOK(node.String(), "completed")
 	return nil

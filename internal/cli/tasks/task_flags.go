@@ -14,6 +14,9 @@ type TaskRunOptions struct {
 	All               bool
 	BufferOutput      bool
 	ContinueOnFailure bool
+	Progress          *TaskProgressSession
+	PreparedRun       *PreparedTaskRun
+	progressIDs       map[TaskNode]string
 }
 
 func parseTaskInvocationArgs(args []string, defaultConcurrency int) ([]string, TaskRunOptions, error) {

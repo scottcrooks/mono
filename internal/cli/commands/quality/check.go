@@ -2,6 +2,7 @@ package quality
 
 import (
 	"fmt"
+	"os"
 	"strconv"
 	"strings"
 
@@ -14,6 +15,8 @@ type checkCLICommand struct{}
 
 var runCheckTaskPhase = runOrchestratedTaskRequestWithConfig
 var runCheckDependencyInstalls = runDependencyInstallsWithConfig
+var runCheckDependencyInstallsWithProgress = runDependencyInstallsWithProgress
+var prepareCheckTaskRun = tasks.PrepareTaskRun
 
 func init() {
 	registerCommand("check", &checkCLICommand{})
@@ -46,7 +49,15 @@ func (c *checkCLICommand) Run(args []string) error {
 		return nil
 	}
 
-	installResults, err := runCheckDependencyInstalls(cfg, targetServices)
+	mode := output.DetectMode(os.Stdout)
+	var installLine *output.ProgressLine
+	if opts.BufferOutput && output.TerminalProgressSupported(os.Stderr, mode) {
+		installLine = output.NewProgressLine(output.ProgressOptions{Writer: os.Stderr, Mode: mode})
+	}
+	installResults, err := runCheckDependencyInstallsWithProgress(cfg, targetServices, installLine)
+	if installLine != nil {
+		installLine.Close()
+	}
 	if err != nil {
 		printDependencyInstallSummary(installResults)
 		return fmt.Errorf("check dependency installs failed: %w", err)
@@ -62,23 +73,39 @@ func (c *checkCLICommand) Run(args []string) error {
 
 	plan := buildPendingCheckPlan(cfg, targetServices)
 	aggregateSummary := tasks.TaskRunSummary{}
-	phaseCount := 0
-	var phaseErrCount int
+	type preparedPhase struct {
+		request TaskRequest
+		run     *tasks.PreparedTaskRun
+	}
+	preparedPhases := make([]preparedPhase, 0, len(plan.Phases))
+	preparedRuns := make([]*tasks.PreparedTaskRun, 0, len(plan.Phases))
 	for _, phase := range plan.Phases {
 		if len(phase.Services) == 0 {
 			continue
 		}
-
-		phaseCount++
-		req := TaskRequest{
-			Task:          phase.Task,
-			Services:      phase.Services,
-			ExactServices: true,
-		}
+		req := TaskRequest{Task: phase.Task, Services: phase.Services, ExactServices: true}
 		if phase.Task == TaskFormat {
 			req.FileTargets = formatTargets
 		}
-		results, phaseErr := runCheckTaskPhase(cfg, req, opts)
+		prepared, prepareErr := prepareCheckTaskRun(cfg, req)
+		if prepareErr != nil {
+			return fmt.Errorf("preparing check phase %s: %w", phase.Task, prepareErr)
+		}
+		preparedPhases = append(preparedPhases, preparedPhase{request: req, run: prepared})
+		preparedRuns = append(preparedRuns, prepared)
+	}
+	phaseCount := len(preparedPhases)
+	var phaseErrCount int
+	var session *tasks.TaskProgressSession
+	if phaseCount > 0 {
+		session = tasks.NewTaskProgressSession(preparedRuns, opts)
+		defer session.Close()
+	}
+	for _, phase := range preparedPhases {
+		phaseOpts := opts
+		phaseOpts.Progress = session
+		phaseOpts.PreparedRun = phase.run
+		results, phaseErr := runCheckTaskPhase(cfg, phase.request, phaseOpts)
 		phaseSummary := tasks.SummarizeTaskResults(results)
 		aggregateSummary.Succeeded += phaseSummary.Succeeded
 		aggregateSummary.Failed += phaseSummary.Failed
@@ -95,6 +122,9 @@ func (c *checkCLICommand) Run(args []string) error {
 		}
 		printer.Summary("No pending check tasks for impacted services.")
 		return nil
+	}
+	if session != nil {
+		session.Close()
 	}
 
 	label := "impacted"

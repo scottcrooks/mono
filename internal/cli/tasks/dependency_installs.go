@@ -74,17 +74,26 @@ func DependencyInstallTargetsForServices(cfg *Config, services []string) ([]Depe
 }
 
 func RunDependencyInstallsWithConfig(cfg *Config, services []string) ([]DependencyInstallResult, error) {
-	return runDependencyInstallsWithConfig(cfg, services, false)
+	return runDependencyInstallsWithConfigAndProgress(cfg, services, false, nil)
 }
 
 func RunDependencyInstallsWithConfigBuffered(cfg *Config, services []string) ([]DependencyInstallResult, error) {
-	return runDependencyInstallsWithConfig(cfg, services, true)
+	return runDependencyInstallsWithConfigAndProgress(cfg, services, true, nil)
 }
 
-func runDependencyInstallsWithConfig(cfg *Config, services []string, bufferOutput bool) ([]DependencyInstallResult, error) {
+// RunDependencyInstallsWithConfigBufferedProgress preserves buffered install
+// behavior while suspending the supplied progress line around transcript replay.
+func RunDependencyInstallsWithConfigBufferedProgress(cfg *Config, services []string, progress *output.ProgressLine) ([]DependencyInstallResult, error) {
+	return runDependencyInstallsWithConfigAndProgress(cfg, services, true, progress)
+}
+
+func runDependencyInstallsWithConfigAndProgress(cfg *Config, services []string, bufferOutput bool, progress *output.ProgressLine) ([]DependencyInstallResult, error) {
 	targets, err := DependencyInstallTargetsForServices(cfg, services)
 	if err != nil {
 		return nil, err
+	}
+	if progress != nil && len(targets) > 0 {
+		progress.Update(output.ProgressView{Kind: output.ProgressInstall})
 	}
 
 	results := make([]DependencyInstallResult, 0, len(targets))
@@ -109,7 +118,7 @@ func runDependencyInstallsWithConfig(cfg *Config, services []string, bufferOutpu
 
 		if err := runDependencyInstallCommand(context.Background(), target, stdoutWriter, stderrWriter); err != nil {
 			printer.StepErr(label, "failed")
-			replayDependencyInstallTranscript(stdoutCapture, stderrCapture)
+			replayDependencyInstallTranscript(stdoutCapture, stderrCapture, progress)
 			results = append(results, DependencyInstallResult{
 				Target: target,
 				Status: TaskStatusFailed,
@@ -132,12 +141,19 @@ func runDependencyInstallsWithConfig(cfg *Config, services []string, bufferOutpu
 	return results, nil
 }
 
-func replayDependencyInstallTranscript(stdoutCapture, stderrCapture *bytes.Buffer) {
-	if stdoutCapture != nil && stdoutCapture.Len() > 0 {
-		_, _ = io.Copy(os.Stdout, stdoutCapture)
+func replayDependencyInstallTranscript(stdoutCapture, stderrCapture *bytes.Buffer, progress *output.ProgressLine) {
+	replay := func() {
+		if stdoutCapture != nil && stdoutCapture.Len() > 0 {
+			_, _ = io.Copy(os.Stdout, stdoutCapture)
+		}
+		if stderrCapture != nil && stderrCapture.Len() > 0 {
+			_, _ = io.Copy(os.Stderr, stderrCapture)
+		}
 	}
-	if stderrCapture != nil && stderrCapture.Len() > 0 {
-		_, _ = io.Copy(os.Stderr, stderrCapture)
+	if progress != nil {
+		progress.Print(replay)
+	} else {
+		replay()
 	}
 }
 

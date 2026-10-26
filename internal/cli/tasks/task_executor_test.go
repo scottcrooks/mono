@@ -1,11 +1,16 @@
 package tasks
 
 import (
+	"bytes"
 	"context"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/scottcrooks/mono/internal/cli/output"
 )
 
 func TestBuildTaskGraphDetectsCycle(t *testing.T) {
@@ -393,6 +398,371 @@ func TestTaskExecutorAuditContinuesOnFailure(t *testing.T) {
 	}
 	if byNode["b:audit"].Status != TaskStatusSucceeded {
 		t.Fatalf("expected b to succeed despite dependency failure, got %+v", byNode["b:audit"])
+	}
+}
+
+func TestPreparedTaskRunPersistsOnlyStartedCommandsAndSeparatesVariants(t *testing.T) {
+	repo := t.TempDir()
+	withWorkingDir(t, repo)
+	mustWrite(t, filepath.Join(repo, "api", "go.mod"), "module api\n\ngo 1.24\n")
+	mustWrite(t, filepath.Join(repo, "api", "api_test.go"), "package api\nimport \"testing\"\nfunc TestOK(t *testing.T) {}\n")
+	cfg := &Config{Services: []Service{{Name: "api", Path: "api", Kind: "service", Archetype: "go"}}}
+	keyRegular := taskTimingKey{Service: "api", Task: string(TaskTest)}
+	keyIntegration := taskTimingKey{Service: "api", Task: string(TaskTest), Integration: true}
+	for _, variant := range []bool{false, true} {
+		prepared, err := PrepareTaskRun(cfg, TaskRequest{Task: TaskTest, Services: []string{"api"}, ExactServices: true, Integration: variant})
+		if err != nil {
+			t.Fatal(err)
+		}
+		node := TaskNode{Service: "api", Task: TaskTest}
+		resolved := prepared.graph.nodes[node]
+		resolved.Command = "go version"
+		prepared.graph.nodes[node] = resolved
+		results, err := RunPreparedTaskRun(prepared, TaskRunOptions{NoCache: true, Concurrency: 1})
+		if err != nil || len(results) != 1 || results[0].Status != TaskStatusSucceeded {
+			t.Fatalf("variant %v run: %+v, %v", variant, results, err)
+		}
+	}
+	loaded, err := newTaskTimingStore(repo).load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(loaded[keyRegular]) != 1 || len(loaded[keyIntegration]) != 1 {
+		t.Fatalf("variant observations missing: %#v", loaded)
+	}
+
+	failed, err := PrepareTaskRun(cfg, TaskRequest{Task: TaskBuild, Services: []string{"api"}, ExactServices: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	buildNode := TaskNode{Service: "api", Task: TaskBuild}
+	resolved := failed.graph.nodes[buildNode]
+	resolved.Command = "definitely-not-a-real-command"
+	failed.graph.nodes[buildNode] = resolved
+	_, runErr := RunPreparedTaskRun(failed, TaskRunOptions{NoCache: true, Concurrency: 1})
+	if runErr == nil {
+		t.Fatal("expected command construction failure")
+	}
+	loaded, err = newTaskTimingStore(repo).load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(loaded[taskTimingKey{Service: "api", Task: string(TaskBuild)}]) != 0 {
+		t.Fatal("command not started contributed a timing sample")
+	}
+}
+
+func TestPreparedTaskRunLearnsStreamedSuccessAndFailure(t *testing.T) {
+	repo := t.TempDir()
+	withWorkingDir(t, repo)
+	mustWrite(t, filepath.Join(repo, "api", "go.mod"), "module api\n\ngo 1.24\n")
+	cfg := &Config{Services: []Service{{Name: "api", Path: "api", Kind: "service", Archetype: "go"}}}
+	for _, tc := range []struct {
+		task       TaskName
+		command    string
+		wantStatus TaskRunStatus
+	}{
+		{TaskBuild, "go version", TaskStatusSucceeded},
+		{TaskAudit, "go definitely-not-a-command", TaskStatusFailed},
+	} {
+		prepared, err := PrepareTaskRun(cfg, TaskRequest{Task: tc.task, Services: []string{"api"}, ExactServices: true})
+		if err != nil {
+			t.Fatal(err)
+		}
+		node := TaskNode{Service: "api", Task: tc.task}
+		resolved := prepared.graph.nodes[node]
+		resolved.Command = tc.command
+		prepared.graph.nodes[node] = resolved
+		_, runErr := RunPreparedTaskRun(prepared, TaskRunOptions{NoCache: true, Concurrency: 1, BufferOutput: false})
+		if tc.wantStatus == TaskStatusSucceeded && runErr != nil {
+			t.Fatal(runErr)
+		}
+		if tc.wantStatus == TaskStatusFailed && runErr == nil {
+			t.Fatal("expected command failure")
+		}
+	}
+	loaded, err := newTaskTimingStore(repo).load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(loaded[taskTimingKey{Service: "api", Task: string(TaskBuild)}]) != 1 || len(loaded[taskTimingKey{Service: "api", Task: string(TaskAudit)}]) != 1 {
+		t.Fatalf("streamed observations missing: %#v", loaded)
+	}
+}
+
+func TestPreparedTaskRunCacheHitDoesNotAddTiming(t *testing.T) {
+	repo := t.TempDir()
+	withWorkingDir(t, repo)
+	mustWrite(t, filepath.Join(repo, "api", "go.mod"), "module api\n\ngo 1.24\n")
+	cfg := &Config{Services: []Service{{Name: "api", Path: "api", Kind: "service", Archetype: "go"}}}
+	prepare := func() *PreparedTaskRun {
+		prepared, err := PrepareTaskRun(cfg, TaskRequest{Task: TaskBuild, Services: []string{"api"}, ExactServices: true})
+		if err != nil {
+			t.Fatal(err)
+		}
+		node := TaskNode{Service: "api", Task: TaskBuild}
+		resolved := prepared.graph.nodes[node]
+		resolved.Command = "go version"
+		prepared.graph.nodes[node] = resolved
+		return prepared
+	}
+	first, err := RunPreparedTaskRun(prepare(), TaskRunOptions{Concurrency: 1})
+	if err != nil || first[0].Status != TaskStatusSucceeded {
+		t.Fatalf("first run: %+v, %v", first, err)
+	}
+	second, err := RunPreparedTaskRun(prepare(), TaskRunOptions{Concurrency: 1})
+	if err != nil || second[0].Status != TaskStatusSkipped || !second[0].Cached {
+		t.Fatalf("cache run: %+v, %v", second, err)
+	}
+	loaded, err := newTaskTimingStore(repo).load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := loaded[taskTimingKey{Service: "api", Task: string(TaskBuild)}]; len(got) != 1 {
+		t.Fatalf("cache hit added timing sample: %v", got)
+	}
+}
+
+func TestCompatibilityRunnerUsesRegisteredPreparedPhases(t *testing.T) {
+	repo := t.TempDir()
+	withWorkingDir(t, repo)
+	mustWrite(t, filepath.Join(repo, "api", "go.mod"), "module api\n\ngo 1.24\n")
+	cfg := &Config{Services: []Service{{Name: "api", Path: "api", Kind: "service", Archetype: "go"}}}
+	var runs []*PreparedTaskRun
+	for _, task := range []TaskName{TaskFix, TaskTest} {
+		run, err := PrepareTaskRun(cfg, TaskRequest{Task: task, Services: []string{"api"}, ExactServices: true})
+		if err != nil {
+			t.Fatal(err)
+		}
+		for node, resolved := range run.graph.nodes {
+			resolved.Command = "go version"
+			run.graph.nodes[node] = resolved
+		}
+		runs = append(runs, run)
+	}
+	opts := TaskRunOptions{NoCache: true, BufferOutput: true, Concurrency: 1}
+	session := NewTaskProgressSession(runs, opts)
+	defer session.Close()
+	for i, run := range runs {
+		opts.PreparedRun, opts.Progress = run, session
+		if _, err := RunOrchestratedTaskRequestWithConfig(cfg, TaskRequest{Task: []TaskName{TaskFix, TaskTest}[i], Services: []string{"api"}, ExactServices: true}, opts); err != nil {
+			t.Fatal(err)
+		}
+		got := session.model.Snapshot()
+		if got.Total != 2 || got.Settled != i+1 || got.Percent != (i+1)*50 {
+			t.Fatalf("phase %d did not advance shared progress: %+v", i, got)
+		}
+	}
+}
+
+func TestPreparedTaskRunHistoryFailuresRemainAdvisory(t *testing.T) {
+	repo := t.TempDir()
+	withWorkingDir(t, repo)
+	mustWrite(t, filepath.Join(repo, "api", "go.mod"), "module api\n\ngo 1.24\n")
+	if err := os.Mkdir(filepath.Join(repo, taskTimingFile), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cfg := &Config{Services: []Service{{Name: "api", Path: "api", Kind: "service", Archetype: "go"}}}
+	prepared, err := PrepareTaskRun(cfg, TaskRequest{Task: TaskBuild, Services: []string{"api"}, ExactServices: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	node := TaskNode{Service: "api", Task: TaskBuild}
+	resolved := prepared.graph.nodes[node]
+	resolved.Command = "go version"
+	prepared.graph.nodes[node] = resolved
+	var results []TaskRunResult
+	var runErr error
+	stdout, stderr := captureStreams(t, func() {
+		results, runErr = RunPreparedTaskRun(prepared, TaskRunOptions{NoCache: true, Concurrency: 1, BufferOutput: true})
+	})
+	if runErr != nil || len(results) != 1 || results[0].Status != TaskStatusSucceeded {
+		t.Fatalf("history failure changed task outcome: %+v, %v", results, runErr)
+	}
+	if !strings.Contains(stderr, "timing history load failed") || !strings.Contains(stderr, "timing history save failed") {
+		t.Fatalf("missing advisory history warnings: %q", stderr)
+	}
+	if strings.Contains(stdout+stderr, "\x1b[2K") {
+		t.Fatalf("buffered pipe wrote progress controls: stdout=%q stderr=%q", stdout, stderr)
+	}
+
+	failing, err := PrepareTaskRun(cfg, TaskRequest{Task: TaskAudit, Services: []string{"api"}, ExactServices: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	failedNode := TaskNode{Service: "api", Task: TaskAudit}
+	resolved = failing.graph.nodes[failedNode]
+	resolved.Command = "go definitely-not-a-command"
+	failing.graph.nodes[failedNode] = resolved
+	failedResults, runErr := RunPreparedTaskRun(failing, TaskRunOptions{NoCache: true, Concurrency: 1})
+	if runErr == nil || len(failedResults) != 1 || failedResults[0].Err == nil || !strings.Contains(failedResults[0].Err.Error(), "exit status") {
+		t.Fatalf("history failure replaced task error: results=%+v error=%v", failedResults, runErr)
+	}
+}
+
+func TestPreparedTaskRunDoesNotLearnFormatSkipsBlockedNodesOrCacheErrors(t *testing.T) {
+	t.Run("format skip", func(t *testing.T) {
+		repo := t.TempDir()
+		withWorkingDir(t, repo)
+		cfg := &Config{Services: []Service{{Name: "api", Path: "api", Kind: "service", Archetype: "go"}}}
+		prepared, err := PrepareTaskRun(cfg, TaskRequest{Task: TaskFormat, Services: []string{"api"}, ExactServices: true, FileTargets: map[string][]string{}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		results, err := RunPreparedTaskRun(prepared, TaskRunOptions{Concurrency: 1})
+		if err != nil || len(results) != 1 || results[0].Status != TaskStatusSkipped {
+			t.Fatalf("skip result: %+v, %v", results, err)
+		}
+		if _, err := os.Stat(filepath.Join(repo, taskTimingFile)); !os.IsNotExist(err) {
+			t.Fatalf("planned skip created timing history: %v", err)
+		}
+	})
+	t.Run("blocked dependency", func(t *testing.T) {
+		repo := t.TempDir()
+		withWorkingDir(t, repo)
+		mustWrite(t, filepath.Join(repo, "a", "go.mod"), "module a\n\ngo 1.24\n")
+		mustWrite(t, filepath.Join(repo, "b", "go.mod"), "module b\n\ngo 1.24\n")
+		cfg := &Config{Services: []Service{{Name: "a", Path: "a", Kind: "service", Archetype: "go"}, {Name: "b", Path: "b", Kind: "service", Archetype: "go", Depends: []string{"a"}}}}
+		prepared, err := PrepareTaskRun(cfg, TaskRequest{Task: TaskBuild, Services: []string{"b"}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		for node, resolved := range prepared.graph.nodes {
+			resolved.Command = "go version"
+			if node.Service == "a" {
+				resolved.Command = "go definitely-not-a-command"
+			}
+			prepared.graph.nodes[node] = resolved
+		}
+		results, err := RunPreparedTaskRun(prepared, TaskRunOptions{NoCache: true, Concurrency: 1})
+		if err == nil {
+			t.Fatal("expected failed dependency")
+		}
+		statuses := map[string]TaskRunStatus{}
+		for _, result := range results {
+			statuses[result.Node.Service] = result.Status
+		}
+		if statuses["a"] != TaskStatusFailed || statuses["b"] != TaskStatusSkipped {
+			t.Fatalf("unexpected dependency statuses: %v", statuses)
+		}
+		loaded, err := newTaskTimingStore(repo).load()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(loaded[taskTimingKey{Service: "a", Task: string(TaskBuild)}]) != 1 || len(loaded[taskTimingKey{Service: "b", Task: string(TaskBuild)}]) != 0 {
+			t.Fatalf("blocked node affected history: %#v", loaded)
+		}
+	})
+	t.Run("cache load error", func(t *testing.T) {
+		repo := t.TempDir()
+		withWorkingDir(t, repo)
+		mustWrite(t, filepath.Join(repo, "api", "go.mod"), "module api\n\ngo 1.24\n")
+		cfg := &Config{Services: []Service{{Name: "api", Path: "api", Kind: "service", Archetype: "go"}}}
+		prepared, err := PrepareTaskRun(cfg, TaskRequest{Task: TaskBuild, Services: []string{"api"}, ExactServices: true})
+		if err != nil {
+			t.Fatal(err)
+		}
+		node := TaskNode{Service: "api", Task: TaskBuild}
+		resolved := prepared.graph.nodes[node]
+		resolved.Command = "go version"
+		prepared.graph.nodes[node] = resolved
+		key, err := buildTaskCacheKey(resolved.Service, node.Task, resolved.Command)
+		if err != nil {
+			t.Fatal(err)
+		}
+		mustWrite(t, filepath.Join(repo, ".cache", "mono", "tasks", key+".json"), "invalid json")
+		results, err := RunPreparedTaskRun(prepared, TaskRunOptions{Concurrency: 1})
+		if err == nil || results[0].Status != TaskStatusFailed {
+			t.Fatalf("expected cache failure: %+v, %v", results, err)
+		}
+		loaded, err := newTaskTimingStore(repo).load()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(loaded[taskTimingKey{Service: "api", Task: string(TaskBuild)}]) != 0 {
+			t.Fatalf("cache failure produced timing sample: %#v", loaded)
+		}
+	})
+}
+
+func TestPreparedTaskRunStartupFailureDoesNotLearn(t *testing.T) {
+	repo := t.TempDir()
+	withWorkingDir(t, repo)
+	mustWrite(t, filepath.Join(repo, "api", "go.mod"), "module api\n\ngo 1.24\n")
+	tools := t.TempDir()
+	mustWrite(t, filepath.Join(tools, "node"), "not executable")
+	if err := os.Chmod(filepath.Join(tools, "node"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", tools)
+	cfg := &Config{Services: []Service{{Name: "api", Path: "api", Kind: "service", Archetype: "go"}}}
+	prepared, err := PrepareTaskRun(cfg, TaskRequest{Task: TaskBuild, Services: []string{"api"}, ExactServices: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	node := TaskNode{Service: "api", Task: TaskBuild}
+	resolved := prepared.graph.nodes[node]
+	resolved.Command = "node command.js"
+	prepared.graph.nodes[node] = resolved
+	results, err := RunPreparedTaskRun(prepared, TaskRunOptions{NoCache: true, Concurrency: 1})
+	if err == nil || results[0].Status != TaskStatusFailed {
+		t.Fatalf("expected subprocess startup failure: %+v, %v", results, err)
+	}
+	loaded, err := newTaskTimingStore(repo).load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(loaded[taskTimingKey{Service: "api", Task: string(TaskBuild)}]) != 0 {
+		t.Fatalf("failed startup produced timing sample: %#v", loaded)
+	}
+}
+
+func TestTaskExecutorSerializesConcurrentFailureReplayWithProgress(t *testing.T) {
+	repo := t.TempDir()
+	withWorkingDir(t, repo)
+	cfg := &Config{Services: []Service{{Name: "a", Path: "a", Kind: "service", Archetype: "go"}, {Name: "b", Path: "b", Kind: "service", Archetype: "go"}}}
+	for _, name := range []string{"a", "b"} {
+		mustWrite(t, filepath.Join(repo, name, "go.mod"), "module "+name+"\n\ngo 1.24\n")
+		mustWrite(t, filepath.Join(repo, name, "fail.js"), "const name = "+strconv.Quote(strings.ToUpper(name))+"; process.stdout.write(name+'-START\\n'); setTimeout(() => { process.stdout.write(name+'-END\\n'); process.stderr.write(name+'-ERR\\n'); process.exit(1) }, 20);\n")
+	}
+	prepared, err := PrepareTaskRun(cfg, TaskRequest{Task: TaskAudit, Services: []string{"a", "b"}, ExactServices: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for node, resolved := range prepared.graph.nodes {
+		resolved.Command = "node fail.js"
+		prepared.graph.nodes[node] = resolved
+	}
+	var events bytes.Buffer
+	line := output.NewProgressLine(output.ProgressOptions{Writer: &events, Mode: output.ModeInteractive, IsTTY: func() bool { return true }, Term: func() string { return "xterm" }, Width: func() (int, error) { return 100, nil }, TickInterval: time.Hour})
+	session := newTaskProgressSession([]*PreparedTaskRun{prepared}, TaskRunOptions{BufferOutput: true, Concurrency: 2}, line)
+	options := TaskRunOptions{NoCache: true, BufferOutput: true, Concurrency: 2, Progress: session, progressIDs: session.ids[prepared]}
+	executor := taskExecutor{cache: newTaskCache(), printer: output.NewPrinterWithMode(&events, &events, output.ModePlain), stdout: &events, stderr: &events}
+	_, runErr := executor.execute(context.Background(), prepared.graph, options)
+	session.Close()
+	if runErr == nil {
+		t.Fatal("expected concurrent command failures")
+	}
+	text := events.String()
+	clear := strings.Index(text, "\x1b[2K")
+	if clear < 0 {
+		t.Fatalf("progress line was not cleared before transcript replay: %q", text)
+	}
+	for _, name := range []string{"A", "B"} {
+		start := strings.Index(text, name+"-START")
+		end := strings.Index(text, name+"-END")
+		errAt := strings.Index(text, name+"-ERR")
+		if start < clear || end < start || errAt < end {
+			t.Fatalf("missing or reordered %s transcript: %q", name, text)
+		}
+		other := "A"
+		if name == "A" {
+			other = "B"
+		}
+		otherStart := strings.Index(text, other+"-START")
+		if otherStart > start && otherStart < errAt {
+			t.Fatalf("concurrent transcripts interleaved: %q", text)
+		}
 	}
 }
 

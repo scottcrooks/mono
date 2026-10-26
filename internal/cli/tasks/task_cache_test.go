@@ -63,3 +63,40 @@ func TestBuildTaskCacheKeyChangesOnCommandChange(t *testing.T) {
 		t.Fatalf("expected cache key to change when command changes")
 	}
 }
+
+func TestBuildTaskCacheKeyIgnoresRootTimingArtifactsOnly(t *testing.T) {
+	repo := t.TempDir()
+	withWorkingDir(t, repo)
+	mustWrite(t, filepath.Join(repo, "main.go"), "package main\n")
+	svc := Service{Name: "root", Path: ".", Kind: "service", Archetype: "go"}
+	before, err := buildTaskCacheKey(svc, TaskBuild, "go build ./...")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{".mono", ".mono.lock", ".mono.tmp-a"} {
+		mustWrite(t, filepath.Join(repo, name), "generated\n")
+	}
+	after, err := buildTaskCacheKey(svc, TaskBuild, "go build ./...")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if before != after {
+		t.Fatal("root timing artifacts changed cache key")
+	}
+	mustWrite(t, filepath.Join(repo, "nested", ".mono"), "source data\n")
+	nested, err := buildTaskCacheKey(svc, TaskBuild, "go build ./...")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if nested == after {
+		t.Fatal("nested .mono source file was excluded")
+	}
+	mustWrite(t, filepath.Join(repo, "main.go"), "package main\n// change\n")
+	changed, err := buildTaskCacheKey(svc, TaskBuild, "go build ./...")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if changed == nested {
+		t.Fatal("real root source change was excluded")
+	}
+}

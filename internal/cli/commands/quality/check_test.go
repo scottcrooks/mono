@@ -1,11 +1,15 @@
 package quality
 
 import (
+	"bytes"
 	"fmt"
+	"io"
+	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/scottcrooks/mono/internal/cli/tasks"
 )
@@ -141,6 +145,118 @@ func TestCheckCommandExecutesPhasesInOrder(t *testing.T) {
 	if !reflect.DeepEqual(calls, want) {
 		t.Fatalf("unexpected phase calls: got %+v want %+v", calls, want)
 	}
+}
+
+func TestCheckPreparesAllPhasesBeforeUsingOneProgressSession(t *testing.T) {
+	repo := initCheckRepoWithFeatureChange(t)
+	withWorkingDir(t, repo)
+	originalInstalls := runCheckDependencyInstalls
+	runCheckDependencyInstalls = func(_ *Config, _ []string) ([]DependencyInstallResult, error) { return nil, nil }
+	t.Cleanup(func() { runCheckDependencyInstalls = originalInstalls })
+	originalPrepare := prepareCheckTaskRun
+	prepareCount := 0
+	prepareCheckTaskRun = func(cfg *Config, req TaskRequest) (*tasks.PreparedTaskRun, error) {
+		prepareCount++
+		return originalPrepare(cfg, req)
+	}
+	t.Cleanup(func() { prepareCheckTaskRun = originalPrepare })
+	originalPhase := runCheckTaskPhase
+	var shared *tasks.TaskProgressSession
+	lastElapsed := time.Duration(0)
+	phaseCount := 0
+	runCheckTaskPhase = func(_ *Config, req TaskRequest, opts TaskRunOptions) ([]TaskRunResult, error) {
+		phaseCount++
+		if prepareCount != 5 {
+			t.Fatalf("first task started before all phases were prepared: %d", prepareCount)
+		}
+		if opts.PreparedRun == nil || opts.Progress == nil {
+			t.Fatalf("prepared phase missing shared state: %+v", opts)
+		}
+		if shared == nil {
+			shared = opts.Progress
+		} else if shared != opts.Progress {
+			t.Fatal("check recreated progress session between phases")
+		}
+		if got := opts.Progress.TotalNodes(); got < 7 {
+			t.Fatalf("denominator missing later phase nodes: %d", got)
+		}
+		if elapsed := opts.Progress.Elapsed(); elapsed < lastElapsed {
+			t.Fatalf("elapsed reset between phases: %s then %s", lastElapsed, elapsed)
+		} else {
+			lastElapsed = elapsed
+		}
+		return []TaskRunResult{{Node: tasks.TaskNode{Service: req.Services[0], Task: req.Task}, Status: tasks.TaskStatusSucceeded}}, nil
+	}
+	t.Cleanup(func() { runCheckTaskPhase = originalPhase })
+	if err := (&checkCLICommand{}).Run([]string{"mono", "check", "--base", "main", "--no-cache"}); err != nil {
+		t.Fatal(err)
+	}
+	if phaseCount != 5 {
+		t.Fatalf("ran %d phases, want 5", phaseCount)
+	}
+}
+
+func TestCheckNoBufferStreamsTasksButKeepsInstallBuffered(t *testing.T) {
+	repo := initCheckRepoWithFeatureChange(t)
+	writeFile(t, repo, "go.mod", "module example.com/check\n\ngo 1.24\n")
+	withWorkingDir(t, repo)
+	tools := t.TempDir()
+	logPath := filepath.Join(t.TempDir(), "go.log")
+	fakeGo := filepath.Join(tools, "go")
+	writeFile(t, tools, "go", "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$MONO_FAKE_GO_LOG\"\nif [ \"$1\" = mod ]; then echo install-output; else echo task-output; fi\n")
+	if err := os.Chmod(fakeGo, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", tools+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("MONO_FAKE_GO_LOG", logPath)
+	stdout, stderr := captureCheckStreams(t, func() {
+		if err := (&checkCLICommand{}).Run([]string{"mono", "check", "--base", "main", "--all", "--no-cache", "--no-buffer"}); err != nil {
+			t.Fatal(err)
+		}
+	})
+	if !strings.Contains(stdout, "[lib:fix] task-output") || !strings.Contains(stdout, "Check complete:") {
+		t.Fatalf("task stream or summary missing: %q", stdout)
+	}
+	if strings.Contains(stdout, "install-output") {
+		t.Fatalf("successful install output should remain buffered: %q", stdout)
+	}
+	if strings.Contains(stdout+stderr, "\x1b[2K") || strings.Contains(stdout+stderr, "\r[") {
+		t.Fatalf("no-buffer run emitted progress controls: stdout=%q stderr=%q", stdout, stderr)
+	}
+	if strings.Count(stdout, "Check complete:") != 1 {
+		t.Fatalf("expected one check summary: %q", stdout)
+	}
+	log, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(log), "mod download") || !strings.Contains(string(log), "test") {
+		t.Fatalf("fake install/task commands did not execute: %s", log)
+	}
+}
+
+func captureCheckStreams(t *testing.T, fn func()) (string, string) {
+	t.Helper()
+	oldOut, oldErr := os.Stdout, os.Stderr
+	rOut, wOut, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	rErr, wErr, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.Stdout, os.Stderr = wOut, wErr
+	fn()
+	_ = wOut.Close()
+	_ = wErr.Close()
+	os.Stdout, os.Stderr = oldOut, oldErr
+	var out, stderr bytes.Buffer
+	_, _ = io.Copy(&out, rOut)
+	_, _ = io.Copy(&stderr, rErr)
+	_ = rOut.Close()
+	_ = rErr.Close()
+	return out.String(), stderr.String()
 }
 
 func TestCheckCommandPrintsSingleFinalSummary(t *testing.T) {

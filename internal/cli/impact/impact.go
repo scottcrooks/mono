@@ -6,6 +6,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/scottcrooks/mono/internal/cli/core"
 	"github.com/scottcrooks/mono/internal/cli/tasks"
 )
 
@@ -107,6 +108,11 @@ func changedFiles(baseRef string) ([]string, error) {
 	}
 	for _, file := range untracked {
 		set[file] = struct{}{}
+	}
+	for file := range set {
+		if core.IsMonoTimingArtifact(file) {
+			delete(set, file)
+		}
 	}
 
 	files := sortedKeys(set)

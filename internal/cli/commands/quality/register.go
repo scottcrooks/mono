@@ -3,6 +3,7 @@ package quality
 import (
 	"github.com/scottcrooks/mono/internal/cli/core"
 	"github.com/scottcrooks/mono/internal/cli/impact"
+	"github.com/scottcrooks/mono/internal/cli/output"
 	"github.com/scottcrooks/mono/internal/cli/tasks"
 )
 
@@ -50,6 +51,13 @@ func printTaskSummary(results []TaskRunResult) { tasks.PrintTaskSummary(results)
 
 func runDependencyInstallsWithConfig(cfg *core.Config, services []string) ([]DependencyInstallResult, error) {
 	return tasks.RunDependencyInstallsWithConfigBuffered(cfg, services)
+}
+
+func runDependencyInstallsWithProgress(cfg *core.Config, services []string, line *output.ProgressLine) ([]DependencyInstallResult, error) {
+	if line == nil {
+		return runCheckDependencyInstalls(cfg, services)
+	}
+	return tasks.RunDependencyInstallsWithConfigBufferedProgress(cfg, services, line)
 }
 
 func printDependencyInstallSummary(results []DependencyInstallResult) {
