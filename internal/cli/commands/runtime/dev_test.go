@@ -380,3 +380,62 @@ func TestStreamingDevDotenvFailurePreventsLaunch(t *testing.T) {
 		t.Fatalf("service launched or unexpected error: %v", err)
 	}
 }
+
+func TestDevTelemetryEnsuresBeforeEmptyReturnAndServiceLaunch(t *testing.T) {
+	t.Run("disabled setting skips ensure", func(t *testing.T) {
+		t.Chdir(t.TempDir())
+		if err := os.WriteFile("services.yaml", []byte("telemetry: false\nservices: []\n"), 0600); err != nil {
+			t.Fatal(err)
+		}
+		called := 0
+		old := ensureTelemetryForDevHook
+		ensureTelemetryForDevHook = func() error { called++; return nil }
+		defer func() { ensureTelemetryForDevHook = old }()
+		if err := (&devCommand{}).Run([]string{"mono", "dev"}); err != nil {
+			t.Fatal(err)
+		}
+		if called != 0 {
+			t.Fatalf("ensure called %d times while disabled", called)
+		}
+	})
+	t.Run("empty selection still ensures", func(t *testing.T) {
+		t.Chdir(t.TempDir())
+		if err := os.WriteFile("services.yaml", []byte("telemetry: true\nservices: []\n"), 0600); err != nil {
+			t.Fatal(err)
+		}
+		called := 0
+		old := ensureTelemetryForDevHook
+		ensureTelemetryForDevHook = func() error { called++; return nil }
+		defer func() { ensureTelemetryForDevHook = old }()
+		if err := (&devCommand{}).Run([]string{"mono", "dev"}); err != nil {
+			t.Fatal(err)
+		}
+		if called != 1 {
+			t.Fatalf("ensure called %d times, want 1", called)
+		}
+	})
+	t.Run("failure prevents service launch", func(t *testing.T) {
+		root := t.TempDir()
+		t.Chdir(root)
+		manifest := "telemetry: true\nservices:\n  - name: svc\n    path: svc\n    kind: service\n    archetype: go\n    dev: go run main.go\n"
+		if err := os.WriteFile("services.yaml", []byte(manifest), 0600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Mkdir("svc", 0700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join("svc", "main.go"), []byte(`package main; import "os"; func main(){os.WriteFile("started",nil,0600)}`), 0600); err != nil {
+			t.Fatal(err)
+		}
+		old := ensureTelemetryForDevHook
+		ensureTelemetryForDevHook = func() error { return errors.New("forward unavailable") }
+		defer func() { ensureTelemetryForDevHook = old }()
+		err := (&devCommand{}).Run([]string{"mono", "dev"})
+		if err == nil || !strings.Contains(err.Error(), "forward unavailable") {
+			t.Fatalf("expected telemetry error, got %v", err)
+		}
+		if _, err := os.Stat(filepath.Join(root, "svc", "started")); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("service launched before telemetry was ready: %v", err)
+		}
+	})
+}

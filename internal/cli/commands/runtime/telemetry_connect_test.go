@@ -204,6 +204,58 @@ func TestTelemetryForwardStartFailureAndStartupCancellation(t *testing.T) {
 	}
 }
 
+func TestDetachedTelemetryForwardIsTrackedAndReused(t *testing.T) {
+	oldDir, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(t.TempDir()); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(oldDir) })
+	ports := telemetryAvailablePorts(t)
+	var values []string
+	for _, port := range ports {
+		values = append(values, strconv.Itoa(port))
+	}
+	binDir := t.TempDir()
+	script := fmt.Sprintf("#!/bin/sh\nMONO_TELEMETRY_FORWARD_HELPER=1 MONO_TELEMETRY_FORWARD_MODE=ready MONO_TELEMETRY_FORWARD_PORTS='%s' exec %q -test.run=^TestTelemetryForwardHelper$\n", strings.Join(values, ","), os.Args[0])
+	kubectl := filepath.Join(binDir, "kubectl")
+	if err := os.WriteFile(kubectl, []byte(script), 0700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := connectTelemetry(ctx, "test", ports); err != nil {
+		t.Fatal(err)
+	}
+	state := loadState()
+	pid := state.PortForwards[telemetryForwardStateKey]
+	if pid <= 0 || !isProcessRunning(pid) {
+		t.Fatalf("forward PID not tracked: %#v", state.PortForwards)
+	}
+	if err := connectTelemetry(ctx, "test", ports); err != nil {
+		t.Fatal(err)
+	}
+	if got := loadState().PortForwards[telemetryForwardStateKey]; got != pid {
+		t.Fatalf("healthy forward replaced: %d -> %d", pid, got)
+	}
+	_ = stopProcess(pid)
+	deadline := time.Now().Add(time.Second)
+	for isProcessRunning(pid) && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if err := connectTelemetry(ctx, "test", ports); err != nil {
+		t.Fatal(err)
+	}
+	recovered := loadState().PortForwards[telemetryForwardStateKey]
+	if recovered <= 0 || recovered == pid || !isProcessRunning(recovered) {
+		t.Fatalf("dead forward was not replaced: old=%d new=%d", pid, recovered)
+	}
+	_ = stopProcess(recovered)
+}
+
 func TestTelemetryEnvAndPorts(t *testing.T) {
 	o, err := parseTelemetryOptions("env", nil)
 	if err != nil {

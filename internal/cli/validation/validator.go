@@ -102,8 +102,9 @@ func (r *Report) sort() {
 }
 
 type manifest struct {
-	Services []manifestService `yaml:"services"`
-	Local    *manifestLocal    `yaml:"local"`
+	Services  []manifestService `yaml:"services"`
+	Local     *manifestLocal    `yaml:"local"`
+	Telemetry bool              `yaml:"telemetry"`
 }
 
 type manifestService struct {

@@ -35,13 +35,22 @@ recognizes `docker-desktop`, `rancher-desktop`, `minikube`, `microk8s`, `colima`
 Ambiguity requires an explicit choice. Unavailable explicit/saved contexts fail
 without falling back. Mono never switches kubeconfig's current context.
 
-Keep `connect` running in a terminal while using the backend. It binds six host
-ports on `127.0.0.1`, waits for forwarding and backend health, and prints the ready
-endpoints. Ctrl-C or SIGTERM stops and reaps its forwarding child. A pod/cluster
-interruption can end forwarding; rerun `connect`. No daemon, PID file, ingress or
-automatic reconnect is installed. Occupied ports fail instead of silently changing
-the endpoints. Grafana keeps the bundled development defaults, including admin/admin
-credentials and anonymous Admin access; the Service is reachable inside its cluster.
+`connect` waits until all six host ports on `127.0.0.1` forward and the backend health
+checks pass, then returns while a detached `kubectl port-forward` continues running.
+Its PID is recorded in `.infra-state.json`; `mono telemetry status` shows its state.
+The next `connect` reuses a healthy forward or replaces a missing or unhealthy tracked
+process. `mono telemetry down` stops the tracked forward before scaling down the
+backend. There is no continuous supervisor, so a pod/cluster interruption is repaired
+when `connect` or an opted-in `mono dev` runs again. Occupied ports fail instead of
+silently changing the endpoints. Grafana keeps the bundled development defaults,
+including admin/admin credentials and anonymous Admin access; the Service is reachable
+inside its cluster.
+
+Set root `telemetry: true` in `services.yaml` to have `mono dev` check and ensure the
+default forwarding before it starts development services. This also applies when no
+services with dev commands are selected. Omit the key or set it to `false` to leave
+telemetry out of the dev startup path. Dev forwarding uses the saved/default telemetry
+context and does not install the backend; install it first with `mono telemetry doctor`.
 
 | Endpoint | Default host URL/address |
 | --- | --- |

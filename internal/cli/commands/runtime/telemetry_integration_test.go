@@ -33,9 +33,7 @@ type telemetryE2E struct {
 }
 
 type telemetryE2EForward struct {
-	cmd  *exec.Cmd
-	done chan error
-	out  *telemetryTestOutput
+	pid int
 }
 
 func TestTelemetryE2E(t *testing.T) {
@@ -76,7 +74,7 @@ func TestTelemetryE2E(t *testing.T) {
 				t.Logf("failure diagnostics: %v: %v\n%s", args, err, data)
 			}
 		}
-		f.stopForward(false)
+		f.stopForward()
 		cleanupCtx, stop := context.WithTimeout(context.Background(), 2*time.Minute)
 		defer stop()
 		data, err := f.run(cleanupCtx, f.dir, "kind", "delete", "cluster", "--name", f.name, "--kubeconfig", filepath.Join(f.dir, "kubeconfig"))
@@ -196,7 +194,7 @@ func TestTelemetryE2E(t *testing.T) {
 	f.cli(projectB, "doctor", "--check")
 	podUID := string(f.kubectl("get", "pods", "-l", "app=mono-telemetry-lgtm", "-o", "jsonpath={.items[0].metadata.uid}"))
 	f.kubectl("delete", "pod", "-l", "app=mono-telemetry-lgtm", "--wait=true", "--timeout=120s")
-	f.stopForward(false)
+	f.stopForward()
 	f.kubectl("rollout", "status", "deployment/lgtm", "--timeout=300s")
 	if next := string(f.kubectl("get", "pods", "-l", "app=mono-telemetry-lgtm", "-o", "jsonpath={.items[0].metadata.uid}")); next == podUID {
 		t.Fatal("pod replacement did not occur")
@@ -204,21 +202,21 @@ func TestTelemetryE2E(t *testing.T) {
 	f.startForward(projectB)
 	verifyData("normal pod replacement")
 	f.cli(projectA, "down")
-	f.stopForward(false)
+	f.stopForward()
 	if data, err := f.run(f.ctx, projectB, f.binary, "telemetry", "status"); err == nil {
 		t.Fatalf("stopped status should fail: %s", data)
 	}
 	f.cli(projectB, "up")
 	f.startForward(projectB)
 	verifyData("down/up")
-	f.stopForward(true)
+	f.stopForward()
 	for _, project := range []string{projectA, projectB} {
 		entries, err := os.ReadDir(project)
 		if err != nil || len(entries) != 0 {
 			t.Fatalf("project directory modified: %s: %v %v", project, entries, err)
 		}
 	}
-	t.Log("two project directories share the installation; foreground interruption releases all six ports")
+	t.Log("two project directories share the installation; stopping the tracked forward releases all six ports")
 }
 
 func (f *telemetryE2E) run(ctx context.Context, dir, name string, args ...string) ([]byte, error) {
@@ -248,49 +246,57 @@ func (f *telemetryE2E) kubectl(args ...string) []byte {
 
 func (f *telemetryE2E) startForward(dir string) {
 	f.t.Helper()
-	cmd := exec.Command(f.binary, append([]string{"telemetry", "connect"}, f.portFlags...)...)
-	out := &telemetryTestOutput{ready: make(chan struct{})}
-	cmd.Env, cmd.Dir, cmd.Stdout, cmd.Stderr, cmd.WaitDelay = f.env, dir, out, out, time.Second
-	if err := cmd.Start(); err != nil {
+	f.cli(dir, append([]string{"connect"}, f.portFlags...)...)
+	data, err := os.ReadFile(filepath.Join(dir, stateFile))
+	if err != nil {
+		f.t.Fatalf("read forwarding state: %v", err)
+	}
+	var state InfraState
+	if err := json.Unmarshal(data, &state); err != nil {
 		f.t.Fatal(err)
 	}
-	process := &telemetryE2EForward{cmd: cmd, done: make(chan error, 1), out: out}
-	f.forward = process
-	go func() { process.done <- cmd.Wait() }()
-	select {
-	case <-out.ready:
-	case err := <-process.done:
-		f.forward = nil
-		f.t.Fatalf("connect exited before ready: %v\n%s", err, out.String())
-	case <-time.After(45 * time.Second):
-		f.t.Fatalf("connect did not become ready: %s", out.String())
+	pid := state.PortForwards[telemetryForwardStateKey]
+	if pid <= 0 {
+		f.t.Fatalf("connect did not record forwarding PID: %s", data)
 	}
+	f.forward = &telemetryE2EForward{pid: pid}
 }
 
-func (f *telemetryE2E) stopForward(expectedStop bool) {
+func (f *telemetryE2E) stopForward() {
 	f.t.Helper()
 	process := f.forward
 	if process == nil {
 		return
 	}
 	f.forward = nil
-	_ = process.cmd.Process.Signal(os.Interrupt)
-	select {
-	case err := <-process.done:
-		if expectedStop && err != nil {
-			f.t.Errorf("connect interrupt should succeed: %v\n%s", err, process.out.String())
-		}
-	case <-time.After(8 * time.Second):
-		_ = process.cmd.Process.Kill()
-		<-process.done
-		f.t.Error("connect did not reap its forwarding child after interruption")
+	_ = stopProcess(process.pid)
+	data, err := os.ReadFile(filepath.Join(f.dir, stateFile))
+	if err != nil {
+		f.t.Fatalf("read forwarding state: %v", err)
 	}
+	var state InfraState
+	if err := json.Unmarshal(data, &state); err != nil {
+		f.t.Fatal(err)
+	}
+	delete(state.PortForwards, telemetryForwardStateKey)
+	if len(state.PortForwards) == 0 {
+		_ = os.Remove(filepath.Join(f.dir, stateFile))
+	} else if data, err := json.Marshal(state); err == nil {
+		_ = os.WriteFile(filepath.Join(f.dir, stateFile), data, 0600)
+	}
+	deadline := time.Now().Add(8 * time.Second)
 	for _, port := range f.ports {
-		listener, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", port))
-		if err != nil {
-			f.t.Errorf("forward port %d leaked: %v", port, err)
-		} else {
-			_ = listener.Close()
+		for {
+			listener, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", port))
+			if err == nil {
+				_ = listener.Close()
+				break
+			}
+			if time.Now().After(deadline) {
+				f.t.Errorf("forward port %d leaked: %v", port, err)
+				break
+			}
+			time.Sleep(50 * time.Millisecond)
 		}
 	}
 }

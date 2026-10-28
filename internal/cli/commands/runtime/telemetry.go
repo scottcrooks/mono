@@ -81,6 +81,26 @@ func (*telemetryCommand) Run(args []string) error {
 	return nil
 }
 
+func ensureTelemetryForDev() error {
+	cfg, err := loadTelemetryConfig()
+	if err != nil {
+		return err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 7*time.Minute)
+	defer cancel()
+	kube := telemetryKube{run: runTelemetryKubectl}
+	selected, err := kube.selectContext(ctx, "", cfg.Context)
+	if err != nil {
+		return err
+	}
+	if err := kube.checkInstallation(ctx, selected, telemetryOptions{}); err != nil {
+		return err
+	}
+	return connectTelemetry(ctx, selected, defaultTelemetryPorts)
+}
+
+var ensureTelemetryForDevHook = ensureTelemetryForDev
+
 func parseTelemetryOptions(sub string, args []string) (telemetryOptions, error) {
 	var o telemetryOptions
 	f := flag.NewFlagSet("telemetry "+sub, flag.ContinueOnError)
@@ -135,7 +155,7 @@ func printTelemetryUsage() {
 	p.Summary("  doctor [--check]      Check prerequisites and install/repair; --check only inspects")
 	p.Summary("  up                    Install/repair and start the shared backend")
 	p.Summary("  status                Inspect the selected installation")
-	p.Summary("  connect               Forward host endpoints in the foreground")
+	p.Summary("  connect               Start forwarding and return after endpoints are ready")
 	p.Summary("  env                   Print application settings without cluster access")
 	p.Summary("  down                  Stop the backend and retain storage")
 	p.Summary("  --context NAME        Select context for cluster commands")

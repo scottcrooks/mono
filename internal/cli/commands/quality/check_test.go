@@ -49,6 +49,57 @@ func TestParseCheckArgsNoBuffer(t *testing.T) {
 	}
 }
 
+func TestParseCheckArgsJUnitEnablesNoCache(t *testing.T) {
+	for _, args := range [][]string{{"--junit", "reports"}, {"--junit=reports"}} {
+		_, _, opts, err := parseCheckArgs(args)
+		if err != nil {
+			t.Fatalf("parseCheckArgs(%v): %v", args, err)
+		}
+		if opts.JUnitDir != "reports" || !opts.NoCache {
+			t.Fatalf("parseCheckArgs(%v) = %+v, want junit dir and no-cache", args, opts)
+		}
+	}
+}
+
+func TestParseCheckArgsRejectsEmptyJUnit(t *testing.T) {
+	for _, args := range [][]string{{"--junit"}, {"--junit", ""}, {"--junit= "}} {
+		if _, _, _, err := parseCheckArgs(args); err == nil {
+			t.Fatalf("parseCheckArgs(%v) unexpectedly succeeded", args)
+		}
+	}
+}
+
+func TestValidateCheckJUnitDir(t *testing.T) {
+	t.Run("creates and resolves empty directory", func(t *testing.T) {
+		dir := filepath.Join(t.TempDir(), "reports")
+		opts := TaskRunOptions{JUnitDir: dir}
+		if err := validateCheckJUnitDir(&opts); err != nil {
+			t.Fatal(err)
+		}
+		abs, err := filepath.Abs(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if opts.JUnitDir != abs || !opts.NoCache {
+			t.Fatalf("unexpected options: %+v", opts)
+		}
+	})
+	t.Run("rejects nonempty directory without removing contents", func(t *testing.T) {
+		dir := t.TempDir()
+		file := filepath.Join(dir, "keep.xml")
+		if err := os.WriteFile(file, []byte("caller data"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		opts := TaskRunOptions{JUnitDir: dir}
+		if err := validateCheckJUnitDir(&opts); err == nil {
+			t.Fatal("expected nonempty directory to be rejected")
+		}
+		if got, err := os.ReadFile(file); err != nil || string(got) != "caller data" {
+			t.Fatalf("caller file changed: %q, %v", got, err)
+		}
+	})
+}
+
 func TestParseCheckArgsRejectsUnknownArg(t *testing.T) {
 	_, _, _, err := parseCheckArgs([]string{"api"})
 	if err == nil {
@@ -68,6 +119,23 @@ func TestCheckCommandNoImpactedServices(t *testing.T) {
 
 	if !strings.Contains(stdout, "No impacted services. Nothing to check.") {
 		t.Fatalf("unexpected output: %q", stdout)
+	}
+}
+
+func TestCheckJUnitValidatesDirectoryBeforeNoOp(t *testing.T) {
+	repo := initCheckRepoWithFeatureChange(t)
+	withWorkingDir(t, repo)
+	dir := filepath.Join(t.TempDir(), "reports")
+	err := (&checkCLICommand{}).Run([]string{"mono", "check", "--base", "HEAD", "--junit", dir})
+	if err != nil {
+		t.Fatalf("check should preserve the no-impact no-op: %v", err)
+	}
+	if info, statErr := os.Stat(dir); statErr != nil || !info.IsDir() {
+		t.Fatalf("junit directory was not created before no-op: info=%v err=%v", info, statErr)
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil || len(entries) != 0 {
+		t.Fatalf("empty selection fabricated report files: entries=%v err=%v", entries, err)
 	}
 }
 
@@ -100,9 +168,11 @@ func TestCheckCommandExecutesPhasesInOrder(t *testing.T) {
 		fileTargets map[string][]string
 	}
 	calls := make([]phaseCall, 0, 6)
+	var phaseOptions []TaskRunOptions
 
 	original := runCheckTaskPhase
-	runCheckTaskPhase = func(_ *Config, req TaskRequest, _ TaskRunOptions) ([]TaskRunResult, error) {
+	runCheckTaskPhase = func(_ *Config, req TaskRequest, opts TaskRunOptions) ([]TaskRunResult, error) {
+		phaseOptions = append(phaseOptions, opts)
 		calls = append(calls, phaseCall{
 			kind:        "task",
 			task:        req.Task,
@@ -127,7 +197,7 @@ func TestCheckCommandExecutesPhasesInOrder(t *testing.T) {
 		runCheckDependencyInstalls = originalInstalls
 	})
 
-	if err := (&checkCLICommand{}).Run([]string{"mono", "check", "--base", "main", "--concurrency", "1", "--no-cache"}); err != nil {
+	if err := (&checkCLICommand{}).Run([]string{"mono", "check", "--base", "main", "--concurrency", "1", "--junit", "reports"}); err != nil {
 		t.Fatalf("check command returned error: %v", err)
 	}
 
@@ -144,6 +214,18 @@ func TestCheckCommandExecutesPhasesInOrder(t *testing.T) {
 	}
 	if !reflect.DeepEqual(calls, want) {
 		t.Fatalf("unexpected phase calls: got %+v want %+v", calls, want)
+	}
+	if len(phaseOptions) != 5 {
+		t.Fatalf("expected options for every phase, got %d", len(phaseOptions))
+	}
+	absReports, err := filepath.Abs("reports")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, opts := range phaseOptions {
+		if !opts.NoCache || opts.JUnitDir != absReports {
+			t.Fatalf("JUnit options not propagated to every phase: %+v", opts)
+		}
 	}
 }
 

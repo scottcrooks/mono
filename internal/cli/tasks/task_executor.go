@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -344,10 +345,13 @@ func continueOnFailure(task TaskName) bool {
 func commandForExecution(svc Service, node TaskNode, command string, affectedFiles []string, opts TaskRunOptions) string {
 	trimmed := strings.TrimSpace(command)
 	trimmed = appendFormatFilesToCommand(svc, node, trimmed, affectedFiles)
-	if !opts.NoCache {
+	if node.Task != TaskTest || (svc.Archetype != "go" && svc.Archetype != "go-tui") {
 		return trimmed
 	}
-	if node.Task != TaskTest || (svc.Archetype != "go" && svc.Archetype != "go-tui") {
+	if opts.JUnitDir != "" {
+		trimmed = strings.Replace(trimmed, "go test", "go test -json", 1)
+	}
+	if !opts.NoCache && opts.JUnitDir == "" {
 		return trimmed
 	}
 	if !strings.HasPrefix(trimmed, "go test") || strings.Contains(trimmed, "-count=") {
@@ -406,7 +410,14 @@ func runTaskCommand(ctx context.Context, printer output.Printer, svc Service, no
 	if stderrWriter == nil {
 		stderrWriter = os.Stderr
 	}
-	cmd.Stdout = output.NewPrefixWriter(fmt.Sprintf("[%s]", node), stdoutWriter)
+	stdoutPrefix := output.NewPrefixWriter(fmt.Sprintf("[%s]", node), stdoutWriter)
+	var junitEvents bytes.Buffer
+	reportJUnit := opts.JUnitDir != "" && node.Task == TaskTest && (svc.Archetype == "go" || svc.Archetype == "go-tui")
+	if reportJUnit {
+		cmd.Stdout = io.MultiWriter(stdoutPrefix, &junitEvents)
+	} else {
+		cmd.Stdout = stdoutPrefix
+	}
 	cmd.Stderr = output.NewPrefixWriter(fmt.Sprintf("[%s]", node), stderrWriter)
 	cmd.Stdin = os.Stdin
 
@@ -421,9 +432,13 @@ func runTaskCommand(ctx context.Context, printer output.Printer, svc Service, no
 	duration := time.Since(commandStartedAt)
 	opts.Progress.settle(progressID)
 	opts.Progress.executed(taskTimingKey{Service: node.Service, Task: string(node.Task), Integration: opts.Integration}, duration)
-	if waitErr != nil {
+	var reportErr error
+	if reportJUnit {
+		reportErr = writeGoTestJUnit(opts.JUnitDir, svc, junitEvents.Bytes())
+	}
+	if waitErr != nil || reportErr != nil {
 		printer.StepErr(node.String(), "failed")
-		return waitErr
+		return errors.Join(waitErr, reportErr)
 	}
 	printer.StepOK(node.String(), "completed")
 	return nil

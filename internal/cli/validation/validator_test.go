@@ -84,6 +84,29 @@ local:
 	}
 }
 
+func TestValidateServicesManifestTelemetryBoolean(t *testing.T) {
+	for _, tc := range []struct {
+		value string
+		valid bool
+	}{{"", true}, {"false", true}, {"true", true}, {"yes", false}, {`"true"`, false}, {"1", false}} {
+		t.Run(tc.value, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "services.yaml")
+			manifest := "services: []\n"
+			if tc.value != "" {
+				manifest = "telemetry: " + tc.value + "\n" + manifest
+			}
+			mustWrite(t, path, manifest)
+			report, err := ValidateServicesManifest(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if report.HasErrors() == tc.valid {
+				t.Fatalf("valid=%v but diagnostics=%+v", tc.valid, report.Diagnostics)
+			}
+		})
+	}
+}
+
 func TestValidateServicesManifestSchemaAndRequiredFields(t *testing.T) {
 	repo := t.TempDir()
 	mustMkdirAll(t, filepath.Join(repo, "apps", "svc"))

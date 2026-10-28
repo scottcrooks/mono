@@ -35,6 +35,11 @@ func (c *devCommand) Run(args []string) error {
 	if err != nil {
 		return err
 	}
+	if config.Telemetry {
+		if err := ensureTelemetryForDevHook(); err != nil {
+			return fmt.Errorf("failed to ensure telemetry forwarding: %w", err)
+		}
+	}
 
 	if len(servicesToRun) == 0 {
 		p.Summary("No services with 'dev' command found")

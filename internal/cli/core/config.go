@@ -9,8 +9,9 @@ import (
 
 // Config represents the services.yaml structure.
 type Config struct {
-	Services []Service  `yaml:"services"`
-	Local    *InfraSpec `yaml:"local"`
+	Services  []Service  `yaml:"services"`
+	Local     *InfraSpec `yaml:"local"`
+	Telemetry bool       `yaml:"telemetry"`
 }
 
 // Service represents a single service configuration.

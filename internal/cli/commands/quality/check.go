@@ -3,6 +3,7 @@ package quality
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 
@@ -28,6 +29,11 @@ func (c *checkCLICommand) Run(args []string) error {
 	baseRef, all, opts, err := parseCheckArgs(args[2:])
 	if err != nil {
 		return err
+	}
+	if opts.JUnitDir != "" {
+		if err := validateCheckJUnitDir(&opts); err != nil {
+			return err
+		}
 	}
 
 	cfg, err := loadConfig()
@@ -147,6 +153,22 @@ func parseCheckArgs(args []string) (baseRef string, all bool, opts TaskRunOption
 		switch {
 		case arg == "--no-cache":
 			opts.NoCache = true
+		case arg == "--junit":
+			if i+1 >= len(args) {
+				return "", all, opts, fmt.Errorf("--junit requires a directory")
+			}
+			opts.JUnitDir = strings.TrimSpace(args[i+1])
+			if opts.JUnitDir == "" || strings.HasPrefix(opts.JUnitDir, "--") {
+				return "", all, opts, fmt.Errorf("--junit requires a non-empty directory")
+			}
+			opts.NoCache = true
+			i++
+		case strings.HasPrefix(arg, "--junit="):
+			opts.JUnitDir = strings.TrimSpace(strings.TrimPrefix(arg, "--junit="))
+			if opts.JUnitDir == "" {
+				return "", all, opts, fmt.Errorf("--junit requires a non-empty directory")
+			}
+			opts.NoCache = true
 		case arg == "--no-buffer":
 			opts.BufferOutput = false
 		case arg == "--all":
@@ -178,7 +200,7 @@ func parseCheckArgs(args []string) (baseRef string, all bool, opts TaskRunOption
 			}
 			opts.Concurrency = v
 		default:
-			return "", all, opts, fmt.Errorf("unknown argument %q (usage: mono check [--base <ref>] [--all] [--no-cache] [--no-buffer] [--concurrency N])", arg)
+			return "", all, opts, fmt.Errorf("unknown argument %q (usage: mono check [--base <ref>] [--all] [--no-cache] [--junit DIR] [--no-buffer] [--concurrency N])", arg)
 		}
 	}
 
@@ -187,4 +209,24 @@ func parseCheckArgs(args []string) (baseRef string, all bool, opts TaskRunOption
 	}
 
 	return baseRef, all, opts, nil
+}
+
+func validateCheckJUnitDir(opts *TaskRunOptions) error {
+	abs, err := filepath.Abs(opts.JUnitDir)
+	if err != nil {
+		return fmt.Errorf("resolving --junit directory: %w", err)
+	}
+	if err := os.MkdirAll(abs, 0o755); err != nil {
+		return fmt.Errorf("creating --junit directory: %w", err)
+	}
+	entries, err := os.ReadDir(abs)
+	if err != nil {
+		return fmt.Errorf("reading --junit directory: %w", err)
+	}
+	if len(entries) != 0 {
+		return fmt.Errorf("--junit directory must be empty: %s", abs)
+	}
+	opts.JUnitDir = abs
+	opts.NoCache = true
+	return nil
 }

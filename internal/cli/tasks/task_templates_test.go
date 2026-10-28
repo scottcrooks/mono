@@ -133,10 +133,10 @@ func TestTaskTemplateCommandsAreIntentional(t *testing.T) {
 		want string
 	}{
 		{svc: goService, task: TaskFix, want: "go fix ./..."},
-		{svc: goService, task: TaskLint, want: "go tool golangci-lint run ./..."},
+		{svc: goService, task: TaskLint, want: "go tool golangci-lint run --allow-parallel-runners ./..."},
 		{svc: goService, task: TaskFormat, want: "go fmt ./..."},
 		{svc: goService, task: TaskTypecheck, want: "go test -run=^$ ./..."},
-		{svc: goPkg, task: TaskLint, want: "go tool golangci-lint run ./..."},
+		{svc: goPkg, task: TaskLint, want: "go tool golangci-lint run --allow-parallel-runners ./..."},
 		{svc: goPkg, task: TaskFix, want: "go fix ./..."},
 		{svc: goPkg, task: TaskFormat, want: "go fmt ./..."},
 		{svc: goService, task: TaskAudit, want: "go tool govulncheck ./..."},

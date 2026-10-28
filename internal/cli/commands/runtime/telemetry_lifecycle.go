@@ -144,6 +144,16 @@ func (k telemetryKube) failureDiagnostics(selected string, cause error) error {
 }
 
 func (k telemetryKube) down(ctx context.Context, selected string) error {
+	state := loadState()
+	if pid, ok := state.PortForwards[telemetryForwardStateKey]; ok {
+		if isProcessRunning(pid) {
+			_ = stopProcess(pid)
+		}
+		delete(state.PortForwards, telemetryForwardStateKey)
+		if err := saveState(state); err != nil {
+			return fmt.Errorf("telemetry stop: clear forwarding state: %w", err)
+		}
+	}
 	objects, err := k.inspectOwned(ctx, selected)
 	if err != nil {
 		return err
@@ -182,7 +192,13 @@ func (k telemetryKube) status(ctx context.Context, selected string) error {
 	}
 	d, pvc := objects["deployment"], objects["pvc"]
 	p := output.DefaultPrinter()
+	state := loadState()
+	forward := "stopped"
+	if pid, ok := state.PortForwards[telemetryForwardStateKey]; ok && isProcessRunning(pid) {
+		forward = fmt.Sprintf("active (PID %d)", pid)
+	}
 	p.Summary(fmt.Sprintf("Context: %s\nNamespace: %s\nDeployment: desired=%d ready=%d\nPVC: phase=%s capacity=%s class=%s", selected, telemetryNamespace, d.Spec.Replicas, d.Status.ReadyReplicas, pvc.Status.Phase, pvc.Status.Capacity["storage"], pvc.Spec.StorageClassName))
+	p.Summary("Host forwarding: " + forward)
 	p.Summary("Host endpoints via mono telemetry connect: Grafana :3000, Loki :3100, Tempo :3200, OTLP gRPC :4317, OTLP HTTP :4318, Prometheus :9090 (127.0.0.1; invocation overrides supported)")
 	return k.checkInstallation(ctx, selected, telemetryOptions{})
 }

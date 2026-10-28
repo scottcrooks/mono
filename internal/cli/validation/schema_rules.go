@@ -8,8 +8,9 @@ import (
 )
 
 var allowedTopLevelKeys = map[string]struct{}{
-	"services": {},
-	"local":    {},
+	"services":  {},
+	"local":     {},
+	"telemetry": {},
 }
 
 var allowedServiceKeys = map[string]struct{}{
@@ -115,6 +116,9 @@ func validateSchema(root *yaml.Node, report *Report) map[int]serviceNodeInfo {
 		if k.Value == "local" {
 			validateKnownMappingKeys(v, "local", allowedLocalKeys, "schema.unknown_local_key", report)
 			validateLocalNestedKeys(v, report)
+		}
+		if k.Value == "telemetry" && (v.Kind != yaml.ScalarNode || v.Tag != "!!bool") {
+			report.add(Diagnostic{Severity: SeverityError, Code: "schema.telemetry_type", Path: "telemetry", Message: "telemetry must be a boolean", Line: v.Line, Column: v.Column})
 		}
 	}
 	if !foundServices {

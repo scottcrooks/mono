@@ -8,6 +8,7 @@ import (
 
 type TaskRunOptions struct {
 	NoCache           bool
+	JUnitDir          string
 	Concurrency       int
 	Integration       bool
 	BaseRef           string

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"os/exec"
@@ -93,8 +94,123 @@ func telemetryHostReady(ctx context.Context, ports telemetryPorts) bool {
 }
 
 func connectTelemetry(ctx context.Context, selected string, ports telemetryPorts) error {
+	state := loadState()
+	if pid, ok := state.PortForwards[telemetryForwardStateKey]; ok {
+		if isProcessRunning(pid) && telemetryForwardReady(ctx, ports) {
+			printTelemetryForwardReady(ports)
+			return nil
+		}
+		if isProcessRunning(pid) {
+			_ = stopProcess(pid)
+		}
+		delete(state.PortForwards, telemetryForwardStateKey)
+		if err := saveState(state); err != nil {
+			return fmt.Errorf("telemetry connect: clear stale forwarding state: %w", err)
+		}
+	}
 	cmd := exec.Command("kubectl", telemetryForwardArgs(selected, ports)...)
-	return forwardTelemetry(ctx, cmd, ports, output.DefaultPrinter(), os.Stderr, 30*time.Second, 5*time.Second)
+	devNull, err := os.OpenFile(os.DevNull, os.O_RDONLY, 0)
+	if err != nil {
+		return err
+	}
+	defer devNull.Close()
+	logFile, err := os.CreateTemp("", "mono-telemetry-forward-*.log")
+	if err != nil {
+		return fmt.Errorf("telemetry connect: create startup log: %w", err)
+	}
+	defer os.Remove(logFile.Name())
+	defer logFile.Close()
+	cmd.Stdin, cmd.Stdout, cmd.Stderr = devNull, logFile, logFile
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	if err := cmd.Start(); err != nil {
+		return fmt.Errorf("telemetry connect: start port forwarding: %w", err)
+	}
+	pid := cmd.Process.Pid
+	exited := make(chan error, 1)
+	go func() { exited <- cmd.Wait() }()
+	state.PortForwards[telemetryForwardStateKey] = pid
+	if err := saveState(state); err != nil {
+		stopTelemetryForward(cmd.Process, exited)
+		return fmt.Errorf("telemetry connect: save forwarding PID: %w: %s", err, readForwardLog(logFile.Name()))
+	}
+	deadline := time.NewTimer(30 * time.Second)
+	defer deadline.Stop()
+	ticker := time.NewTicker(100 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		select {
+		case waitErr := <-exited:
+			delete(state.PortForwards, telemetryForwardStateKey)
+			_ = saveState(state)
+			return fmt.Errorf("telemetry connect: port-forward exited during startup (%v); check kubectl context %q and local port availability: %s", waitErr, selected, readForwardLog(logFile.Name()))
+		default:
+		}
+		if !isProcessRunning(pid) {
+			delete(state.PortForwards, telemetryForwardStateKey)
+			_ = saveState(state)
+			return fmt.Errorf("telemetry connect: port-forward exited during startup; check kubectl context %q and local port availability: %s", selected, readForwardLog(logFile.Name()))
+		}
+		if telemetryForwardReady(ctx, ports) {
+			_ = os.Remove(logFile.Name())
+			printTelemetryForwardReady(ports)
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			stopTelemetryForward(cmd.Process, exited)
+			delete(state.PortForwards, telemetryForwardStateKey)
+			_ = saveState(state)
+			return ctx.Err()
+		case <-deadline.C:
+			stopTelemetryForward(cmd.Process, exited)
+			delete(state.PortForwards, telemetryForwardStateKey)
+			_ = saveState(state)
+			return fmt.Errorf("telemetry connect: startup timed out waiting for all six loopback forwards and backend health; check for occupied ports and rerun connect: %s", readForwardLog(logFile.Name()))
+		case <-ticker.C:
+		}
+	}
+}
+
+func readForwardLog(path string) string {
+	data, err := os.ReadFile(path)
+	if err != nil || len(data) == 0 {
+		return "no kubectl diagnostics"
+	}
+	if len(data) > 4096 {
+		data = data[len(data)-4096:]
+	}
+	return strings.TrimSpace(string(data))
+}
+
+func stopTelemetryForward(process *os.Process, exited <-chan error) {
+	_ = process.Signal(syscall.SIGTERM)
+	timer := time.NewTimer(time.Second)
+	defer timer.Stop()
+	select {
+	case <-exited:
+	case <-timer.C:
+		_ = process.Kill()
+		<-exited
+	}
+}
+
+const telemetryForwardStateKey = "telemetry"
+
+func telemetryForwardReady(ctx context.Context, ports telemetryPorts) bool {
+	for _, port := range ports {
+		conn, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", port), 250*time.Millisecond)
+		if err != nil {
+			return false
+		}
+		_ = conn.Close()
+	}
+	return telemetryHostReady(ctx, ports)
+}
+
+func printTelemetryForwardReady(ports telemetryPorts) {
+	p := output.DefaultPrinter()
+	p.StepOK("telemetry", "Ready on 127.0.0.1; forwarding continues in the background")
+	p.Summary(fmt.Sprintf("Grafana %s | Loki %s | Tempo %s | Prometheus %s\nOTLP HTTP %s | OTLP gRPC 127.0.0.1:%d", ports.url(0), ports.url(1), ports.url(2), ports.url(5), ports.url(4), ports[3]))
 }
 
 // The caller owns signal cancellation; this function owns and always reaps its child.
