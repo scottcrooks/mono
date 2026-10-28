@@ -5,8 +5,9 @@ go 1.25
 require (
 	github.com/golang-migrate/migrate/v4 v4.18.3
 	github.com/jackc/pgx/v5 v5.7.2
-	golang.org/x/term v0.30.0
+	github.com/joho/godotenv v1.5.1
 	golang.org/x/sys v0.31.0
+	golang.org/x/term v0.30.0
 	gopkg.in/yaml.v3 v3.0.1
 )
 

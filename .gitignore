@@ -32,7 +32,7 @@ go.work.sum
 
 # env file
 .env
-
+graphify-out/
 # Editor/IDE
 # .idea/
 # .vscode/

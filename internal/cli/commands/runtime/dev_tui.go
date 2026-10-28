@@ -323,6 +323,10 @@ func prepareDevChildren(background []Service, tui *Service, rt devTUIRuntime) ([
 			return nil, fmt.Errorf("[%s] %w", svc.Name, err)
 		}
 		cmd.Dir = absPath
+		cmd.Env, err = devEnvironment(rt.root, absPath, cmd.Environ())
+		if err != nil {
+			return nil, fmt.Errorf("[%s] %w", svc.Name, err)
+		}
 		cmd.WaitDelay = time.Second
 		if i < len(services)-1 {
 			if err := configureBackgroundProcess(cmd); err != nil {

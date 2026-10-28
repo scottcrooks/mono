@@ -223,6 +223,11 @@ func runServiceDev(ctx context.Context, svc Service) error {
 		return fmt.Errorf("no 'dev' command defined for service %s (no default for archetype %q)", svc.Name, svc.Archetype)
 	}
 
+	root, err := os.Getwd()
+	if err != nil {
+		return fmt.Errorf("resolve dev root: %w", err)
+	}
+
 	// Resolve absolute path to service directory
 	absPath, err := filepath.Abs(svc.Path)
 	if err != nil {
@@ -237,6 +242,10 @@ func runServiceDev(ctx context.Context, svc Service) error {
 		return fmt.Errorf("[%s] %w", svc.Name, err)
 	}
 	cmd.Dir = absPath
+	cmd.Env, err = devEnvironment(root, absPath, cmd.Environ())
+	if err != nil {
+		return err
+	}
 
 	// Create per-service colored prefix writers for easier multi-service log scanning.
 	mode := p.Mode()

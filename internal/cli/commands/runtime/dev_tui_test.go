@@ -2,6 +2,7 @@ package runtimecmd
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -433,7 +434,7 @@ func TestRunTUIDevBackgroundFailureStopsTUI(t *testing.T) {
 	active, done := filepath.Join(root, "active"), filepath.Join(root, "done")
 	rt := testTUIRuntime(t, root, stdin, stdout, stderr, func(_ context.Context, parts []string) (*exec.Cmd, error) {
 		if parts[0] == "background" {
-			return tuiHelperCommand("bg-fail", nil), nil
+			return tuiHelperCommand("bg-fail", map[string]string{"ACTIVE": active}), nil
 		}
 		return tuiHelperCommand("tui", map[string]string{"ACTIVE": active, "DONE": done}), nil
 	})
@@ -648,6 +649,23 @@ func TestDevTUIHelperProcess(t *testing.T) {
 	if os.Getenv("MONO_TUI_HELPER") != "1" {
 		return
 	}
+	if report := os.Getenv("MONO_TUI_REPORT"); report != "" {
+		values := map[string]string{}
+		for _, entry := range os.Environ() {
+			key, value, _ := strings.Cut(entry, "=")
+			if strings.HasPrefix(key, "MONO_DEV_FIXTURE_") {
+				values[key] = value
+			}
+		}
+		values["cwd"], _ = os.Getwd()
+		data, err := json.Marshal(values)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(report, data, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
 	mode := os.Getenv("MONO_TUI_MODE")
 	if mode == "fail" {
 		writeMarker(t, os.Getenv("MONO_TUI_DONE"))
@@ -695,6 +713,7 @@ func TestDevTUIHelperProcess(t *testing.T) {
 		}
 	}
 	if mode == "bg-fail" {
+		waitForPath(t, os.Getenv("MONO_TUI_ACTIVE"))
 		os.Exit(11)
 	}
 	if mode == "bg-zero" {
@@ -722,10 +741,10 @@ func TestDevTUIHelperProcess(t *testing.T) {
 	}
 	if mode == "tui" {
 		_, _ = fmt.Fprintln(os.Stdout, "TUI ACTIVE")
-		writeMarker(t, os.Getenv("MONO_TUI_ACTIVE"))
 		wait := make(chan os.Signal, 1)
 		signal.Notify(wait, os.Interrupt, syscall.SIGTERM)
 		defer signal.Stop(wait)
+		writeMarker(t, os.Getenv("MONO_TUI_ACTIVE"))
 		for {
 			select {
 			case <-wait:
@@ -789,4 +808,75 @@ func readTestFile(t *testing.T, path string) string {
 		t.Fatal(err)
 	}
 	return string(data)
+}
+
+func TestRunTUIDevEnvironment(t *testing.T) {
+	root, services := devEnvironmentFixture(t)
+	before := os.Environ()
+	services[0].Dev = "background"
+	services[1].Dev = "tui"
+	services[1].Archetype = "go-tui"
+	exit := filepath.Join(root, "exit")
+	done := filepath.Join(root, "done")
+	reports := map[string]string{"background": filepath.Join(root, "background.json"), "tui": filepath.Join(root, "tui.json")}
+	rt := testTUIRuntime(t, root, openTestStream(t, "stdin"), openTestStream(t, "stdout"), openTestStream(t, "stderr"), func(_ context.Context, parts []string) (*exec.Cmd, error) {
+		return tuiHelperCommand(parts[0], map[string]string{"REPORT": reports[parts[0]], "EXIT": exit, "DONE": done}), nil
+	})
+	result := make(chan error, 1)
+	go func() { result <- runTUIDevWithRuntime(services[:1], services[1], rt) }()
+	for _, path := range reports {
+		waitForPath(t, path)
+	}
+	writeMarker(t, exit)
+	if err := <-result; err != nil {
+		t.Fatal(err)
+	}
+	for i, mode := range []string{"background", "tui"} {
+		assertDevEnvironmentReport(t, reports[mode], filepath.Join(root, services[i].Path), services[i].Name)
+	}
+	if !reflect.DeepEqual(before, os.Environ()) {
+		t.Fatal("parent environment changed")
+	}
+}
+
+func TestRunTUIDevDotenvFailurePreventsAllStarts(t *testing.T) {
+	for _, badIndex := range []int{0, 1} {
+		t.Run(fmt.Sprint(badIndex), func(t *testing.T) {
+			root := t.TempDir()
+			services := []Service{{Name: "backend", Path: "backend", Dev: "background"}, {Name: "terminal", Path: "terminal", Dev: "tui", Archetype: "go-tui"}}
+			for _, svc := range services {
+				writeDevEnv(t, filepath.Join(root, svc.Path), "VALID=yes")
+			}
+			path := filepath.Join(root, services[badIndex].Path, ".env")
+			writeDevEnv(t, filepath.Dir(path), "BAD!KEY=SECRET_SENTINEL")
+			var commands []*exec.Cmd
+			rt := testTUIRuntime(t, root, openTestStream(t, "stdin"), openTestStream(t, "stdout"), openTestStream(t, "stderr"), func(_ context.Context, parts []string) (*exec.Cmd, error) {
+				cmd := tuiHelperCommand(parts[0], nil)
+				commands = append(commands, cmd)
+				return cmd, nil
+			})
+			restored := false
+			rt.snapshot = func(*os.File) (func() error, error) { return func() error { restored = true; return nil }, nil }
+			err := runTUIDevWithRuntime(services[:1], services[1], rt)
+			if err == nil {
+				t.Fatal("expected startup failure")
+			}
+			for _, part := range []string{"[" + services[badIndex].Name + "]", path, "invalid dotenv"} {
+				if !strings.Contains(err.Error(), part) {
+					t.Fatalf("missing %q in %v", part, err)
+				}
+			}
+			if strings.Contains(err.Error(), "SECRET_SENTINEL") {
+				t.Fatal("secret leaked")
+			}
+			for _, cmd := range commands {
+				if cmd.Process != nil {
+					t.Fatal("child started despite preparation failure")
+				}
+			}
+			if !restored {
+				t.Fatal("terminal not restored")
+			}
+		})
+	}
 }

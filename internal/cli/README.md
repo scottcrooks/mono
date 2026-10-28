@@ -53,3 +53,50 @@ the default test suite never contacts a live cluster.
 2. Register it via the package-local `registerCommand("name", cmd)`.
 3. Ensure the package is wired in `internal/cli/run.go` via `Register(registry)`.
 4. Add package-local tests for command behavior.
+
+## Dev environment files
+
+`mono dev` supplies environment defaults from the invocation directory's `.env`
+(next to the loaded `services.yaml`) and each selected service directory's `.env`.
+This applies to streaming services, TUI background services, and the foreground TUI.
+For example, using synthetic values:
+
+```dotenv
+# .env
+APP_REGION=local
+APP_COLOR=gray
+```
+
+```dotenv
+# apps/sample/.env
+APP_COLOR=blue
+SAMPLE_FEATURE=enabled
+```
+
+```dotenv
+# apps/sample2/.env
+APP_COLOR=green
+```
+
+Both services receive `APP_REGION=local`. Sample receives blue and its feature
+flag; sample2 receives green and never receives sample's file values. Precedence,
+from lowest to highest, is repository file, service file, inherited child
+environment. An inherited value wins even when explicitly empty, such as
+`APP_COLOR= mono dev sample`. File values never change mono's own environment.
+
+These are parsed values in the initial child environment, not mounted files or
+shell scripts. Syntax uses godotenv v1.5.1: assignments, comments, `export`, single
+and double quotes, multiline quoted values, escapes, and same-file variable
+references. Later duplicate assignments win. Each file is parsed independently;
+references do not expand against the repository file or inherited environment.
+Shell command substitutions are never executed. Applications remain responsible
+for any configuration loading they perform after launch.
+
+Only these two `.env` locations are read, including when a service directory is
+an absolute path. There is no ancestor search, `.env.local`, or environment-specific
+variant. Missing files are optional. Other read errors or malformed files stop
+the affected service before launch and identify the service and file path without
+printing source values. TUI preparation checks all children before starting any;
+streaming services start independently, so another service may already be running.
+Files are read during each child's preparation; there is no atomic snapshot across
+services. Restart `mono dev` to pick up edits; files are not watched or reloaded.

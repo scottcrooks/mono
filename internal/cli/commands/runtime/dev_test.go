@@ -1,8 +1,16 @@
 package runtimecmd
 
 import (
+	"context"
+	"encoding/json"
+	"errors"
+	"os"
+	"path/filepath"
 	"reflect"
+	"strings"
+	"sync"
 	"testing"
+	"time"
 )
 
 func TestCollectInfraDeps(t *testing.T) {
@@ -263,5 +271,112 @@ func TestEffectiveDevDependenciesMergesAndDeduplicates(t *testing.T) {
 	want := []string{"api", "postgres", "mallos", "redis"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("unexpected dependencies: got %v, want %v", got, want)
+	}
+}
+
+// The report includes only synthetic fixture variables, never the full environment.
+const devEnvReportSource = `package main
+import ("encoding/json"; "os"; "strings")
+func main() {
+ values := map[string]string{}
+ for _, entry := range os.Environ() {
+  key, value, _ := strings.Cut(entry, "=")
+  if strings.HasPrefix(key, "MONO_DEV_FIXTURE_") { values[key] = value }
+ }
+ values["cwd"], _ = os.Getwd()
+ data, _ := json.Marshal(values)
+ if err := os.WriteFile(os.Args[1], data, 0600); err != nil { panic(err) }
+}
+`
+
+func devEnvironmentFixture(t *testing.T) (string, []Service) {
+	t.Helper()
+	t.Setenv("MONO_DEV_FIXTURE_SHELL", "inherited")
+	t.Setenv("MONO_DEV_FIXTURE_EMPTY", "")
+	root := t.TempDir()
+	writeDevEnv(t, root, "MONO_DEV_FIXTURE_ROOT=default\nMONO_DEV_FIXTURE_OWN=root\nMONO_DEV_FIXTURE_SHELL=root\nMONO_DEV_FIXTURE_EMPTY=root")
+	var services []Service
+	for _, name := range []string{"sample", "sample2"} {
+		dir := filepath.Join(root, "apps", name)
+		writeDevEnv(t, dir, "MONO_DEV_FIXTURE_OWN="+name+"\nMONO_DEV_FIXTURE_ONLY_"+name+"=yes\nMONO_DEV_FIXTURE_SHELL=service\nMONO_DEV_FIXTURE_EMPTY=service")
+		services = append(services, Service{Name: name, Path: filepath.Join("apps", name), Dev: "go run main.go report.json"})
+	}
+	return root, services
+}
+
+func assertDevEnvironmentReport(t *testing.T, path, dir, name string) {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got map[string]string
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]string{
+		"cwd": dir, "MONO_DEV_FIXTURE_ROOT": "default", "MONO_DEV_FIXTURE_OWN": name,
+		"MONO_DEV_FIXTURE_ONLY_" + name: "yes", "MONO_DEV_FIXTURE_SHELL": "inherited", "MONO_DEV_FIXTURE_EMPTY": "",
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("child report got %v, want %v", got, want)
+	}
+}
+
+func TestRunServiceDevEnvironment(t *testing.T) {
+	root, services := devEnvironmentFixture(t)
+	t.Chdir(root)
+	before := os.Environ()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	var wg sync.WaitGroup
+	for _, svc := range services {
+		dir := filepath.Join(root, svc.Path)
+		if err := os.WriteFile(filepath.Join(dir, "main.go"), []byte(devEnvReportSource), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		wg.Go(func() {
+			if err := runServiceDev(ctx, svc); err != nil {
+				t.Error(err)
+			}
+		})
+	}
+	wg.Wait()
+	for _, svc := range services {
+		dir := filepath.Join(root, svc.Path)
+		assertDevEnvironmentReport(t, filepath.Join(dir, "report.json"), dir, svc.Name)
+	}
+	if !reflect.DeepEqual(before, os.Environ()) {
+		t.Fatal("parent environment changed")
+	}
+}
+
+func TestStreamingDevDotenvFailurePreventsLaunch(t *testing.T) {
+	root := t.TempDir()
+	t.Chdir(root)
+	writeDevEnv(t, filepath.Join(root, "service"), "BAD!KEY=SECRET_SENTINEL")
+	// This command would create a marker if launched.
+	source := `package main; import "os"; func main(){os.WriteFile("started",nil,0600)}`
+	if err := os.WriteFile(filepath.Join(root, "service", "main.go"), []byte(source), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	stderr := openTestStream(t, "errors")
+	original := os.Stderr
+	os.Stderr = stderr
+	defer func() { os.Stderr = original }()
+	if err := runStreamingDev([]Service{{Name: "broken", Path: "service", Dev: "go run main.go"}}); err == nil {
+		t.Fatal("expected startup failure")
+	}
+	message := readTestFile(t, stderr.Name())
+	for _, part := range []string{"[broken]", filepath.Join(root, "service", ".env"), "invalid dotenv"} {
+		if !strings.Contains(message, part) {
+			t.Fatalf("missing %q in %s", part, message)
+		}
+	}
+	if strings.Contains(message, "SECRET_SENTINEL") {
+		t.Fatal("secret leaked")
+	}
+	if _, err := os.Stat(filepath.Join(root, "service", "started")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("service launched or unexpected error: %v", err)
 	}
 }
