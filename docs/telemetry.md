@@ -46,11 +46,23 @@ silently changing the endpoints. Grafana keeps the bundled development defaults,
 including admin/admin credentials and anonymous Admin access; the Service is reachable
 inside its cluster.
 
-Set root `telemetry: true` in `services.yaml` to have `mono dev` check and ensure the
-default forwarding before it starts development services. This also applies when no
-services with dev commands are selected. Omit the key or set it to `false` to leave
-telemetry out of the dev startup path. Dev forwarding uses the saved/default telemetry
-context and does not install the backend; install it first with `mono telemetry doctor`.
+Set root `telemetry: true` in `services.yaml` to have `mono dev` check the
+installation and ensure a managed forward before starting development services,
+even when no dev commands are selected. It reuses a verified healthy forward for
+the selected context, including custom host ports and forwards started from another
+project directory; otherwise it starts the default mapping. Dev does not install the backend: run `mono telemetry doctor` first.
+
+With telemetry enabled, `mono dev` sends each service's stdout and stderr lines to
+Loki with the configured service name as the `job` label. Ordinary sessions still
+show prefixed output on their respective terminal streams. In TUI sessions only
+background services are captured; the foreground TUI owns the terminal directly,
+and its screen output and Mono lifecycle messages are not sent to Loki. Enabled
+TUI sessions do not create or report a local session log. Delivery is best effort,
+without retries or durable buffering.
+
+Omit `telemetry` or set it to `false` to leave telemetry out of the dev startup path.
+Ordinary output remains in the terminal, and TUI background output and lifecycle
+messages continue to be stored in the private local session log.
 
 | Endpoint | Default host URL/address |
 | --- | --- |
@@ -83,6 +95,7 @@ If your application already sets resource attributes, combine them intentionally
 All projects use the same backend. Explicit service/namespace identity makes their
 data distinguishable. Applications still need an SDK or instrumentation that emits
 telemetry; mono does not instrument them, scrape host processes, or collect pod logs.
+The opt-in `mono dev` capture described above is separate from SDK instrumentation.
 
 Override host ports identically in both commands:
 
@@ -160,7 +173,7 @@ Normal `make check` uses isolated fake kubectl and helper processes. The explici
 daemon and image network access. Kind can use Rancher Desktop's Docker engine. It
 creates and destroys only a uniquely named disposable cluster with private
 kubeconfig/config directories; it never targets your existing Rancher cluster.
-The test sends host OTLP logs/metrics/traces and native Loki/remote-write samples,
+The test sends host OTLP logs/metrics/traces, captured dev service output and native Loki/remote-write samples,
 checks Grafana provisioning/dashboard persistence, replaces a pod, performs down/up,
 queries historical data, compares PVC UIDs, checks sharing across two empty project
 directories, and verifies port release after interrupting connect. An explicitly

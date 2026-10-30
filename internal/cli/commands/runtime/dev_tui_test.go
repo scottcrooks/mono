@@ -6,11 +6,14 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"reflect"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -405,19 +408,28 @@ func TestRunTUIDevTreatsForegroundInterruptAsExpectedExit(t *testing.T) {
 	_ = os.MkdirAll(filepath.Join(root, "apps/terminal"), 0o755)
 	stdin, stdout, stderr := openTestStream(t, "stdin"), openTestStream(t, "stdout"), openTestStream(t, "stderr")
 	active, done := filepath.Join(root, "active"), filepath.Join(root, "done")
-	commands := make(chan *exec.Cmd, 1)
+	pidPath := filepath.Join(root, "pid")
 	rt := testTUIRuntime(t, root, stdin, stdout, stderr, func(_ context.Context, _ []string) (*exec.Cmd, error) {
-		command := tuiHelperCommand("tui", map[string]string{"ACTIVE": active, "DONE": done, "SIGNAL_EXIT": "130"})
-		commands <- command
-		return command, nil
+		return tuiHelperCommand("tui", map[string]string{"ACTIVE": active, "DONE": done, "SIGNAL_EXIT": "130", "PID": pidPath}), nil
 	})
 	result := make(chan error, 1)
 	go func() {
 		result <- runTUIDevWithRuntime(nil, Service{Name: "terminal", Path: "apps/terminal", Archetype: "go-tui", Dev: "tui"}, rt)
 	}()
 	waitForPath(t, active)
-	command := <-commands
-	if err := command.Process.Signal(os.Interrupt); err != nil {
+	raw, err := os.ReadFile(pidPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pid, err := strconv.Atoi(string(raw))
+	if err != nil {
+		t.Fatal(err)
+	}
+	process, err := os.FindProcess(pid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := process.Signal(os.Interrupt); err != nil {
 		t.Fatal(err)
 	}
 	if err := <-result; err != nil {
@@ -671,6 +683,11 @@ func TestDevTUIHelperProcess(t *testing.T) {
 		writeMarker(t, os.Getenv("MONO_TUI_DONE"))
 		os.Exit(17)
 	}
+	if mode == "background-once" {
+		_, _ = fmt.Fprint(os.Stdout, "out-line\nout-fragment")
+		_, _ = fmt.Fprint(os.Stderr, "err-line\nerr-fragment")
+		os.Exit(0)
+	}
 	if mode == "background" {
 		writeMarker(t, os.Getenv("MONO_TUI_READY"))
 		wait := make(chan os.Signal, 1)
@@ -683,6 +700,10 @@ func TestDevTUIHelperProcess(t *testing.T) {
 			default:
 			}
 			if _, err := os.Stat(os.Getenv("MONO_TUI_RELEASE")); err == nil {
+				if os.Getenv("MONO_TUI_LOG_LINES") == "1" {
+					_, _ = fmt.Fprint(os.Stdout, "out-line\n")
+					_, _ = fmt.Fprint(os.Stderr, "err-line\n")
+				}
 				_, _ = fmt.Fprint(os.Stdout, "out-fragment")
 				_, _ = fmt.Fprint(os.Stderr, "err-fragment")
 				_ = os.Remove(os.Getenv("MONO_TUI_RELEASE"))
@@ -744,6 +765,11 @@ func TestDevTUIHelperProcess(t *testing.T) {
 		wait := make(chan os.Signal, 1)
 		signal.Notify(wait, os.Interrupt, syscall.SIGTERM)
 		defer signal.Stop(wait)
+		if path := os.Getenv("MONO_TUI_PID"); path != "" {
+			if err := os.WriteFile(path, []byte(strconv.Itoa(os.Getpid())), 0600); err != nil {
+				t.Fatal(err)
+			}
+		}
 		writeMarker(t, os.Getenv("MONO_TUI_ACTIVE"))
 		for {
 			select {
@@ -879,4 +905,145 @@ func TestRunTUIDevDotenvFailurePreventsAllStarts(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestRunTUIDevLokiCapturesBackgroundAndRestoresTerminal(t *testing.T) {
+	if !processGroupsSupported() {
+		t.Skip("TUI takeover is unsupported")
+	}
+	receiver := &lokiReceiver{values: make(map[string][]string)}
+	server := httptest.NewServer(http.HandlerFunc(receiver.serve))
+	defer server.Close()
+	root := t.TempDir()
+	for _, name := range []string{"alpha", "beta", "terminal"} {
+		if err := os.Mkdir(filepath.Join(root, name), 0700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	stdin, stdout, stderr := openTestStream(t, "stdin"), openTestStream(t, "stdout"), openTestStream(t, "stderr")
+	active, exit, done := filepath.Join(root, "active"), filepath.Join(root, "exit"), filepath.Join(root, "done")
+	signals := make(chan os.Signal, 1)
+	cmds := make(map[string]*exec.Cmd)
+	rt := testTUIRuntime(t, root, stdin, stdout, stderr, func(_ context.Context, parts []string) (*exec.Cmd, error) {
+		name := parts[0]
+		markers := map[string]string{"ACTIVE": active, "EXIT": exit, "DONE": done}
+		mode := "tui"
+		if name != "terminal" {
+			mode = "background"
+			markers = map[string]string{"READY": filepath.Join(root, name+"-ready"), "RELEASE": filepath.Join(root, name+"-release"), "WRITTEN": filepath.Join(root, name+"-written"), "LOG_LINES": "1"}
+			if name == "beta" {
+				mode = "background-once"
+			}
+		}
+		cmd := tuiHelperCommand(mode, markers)
+		cmds[name] = cmd
+		return cmd, nil
+	})
+	rt.lokiEndpoint = server.URL
+	rt.signals = signals
+	rt.createLog = func(string) (io.WriteCloser, string, error) {
+		t.Error("created session log in telemetry mode")
+		return nil, "", errors.New("unexpected log creation")
+	}
+	restored := false
+	rt.snapshot = func(*os.File) (func() error, error) {
+		return func() error {
+			if _, err := os.Stat(done); err != nil {
+				return err
+			}
+			restored = true
+			return nil
+		}, nil
+	}
+	background := []Service{{Name: "alpha", Path: "alpha", Dev: "alpha"}, {Name: "beta", Path: "beta", Dev: "beta"}}
+	result := make(chan error, 1)
+	go func() {
+		result <- runTUIDevWithRuntime(background, Service{Name: "terminal", Path: "terminal", Archetype: "go-tui", Dev: "terminal"}, rt)
+	}()
+	waitForPath(t, active)
+	for _, name := range []string{"alpha"} {
+		waitForPath(t, filepath.Join(root, name+"-ready"))
+		writeMarker(t, filepath.Join(root, name+"-release"))
+		waitForPath(t, filepath.Join(root, name+"-written"))
+	}
+	// A trailing fragment is pushed only after Wait, so observe it before
+	// shutdown to exercise both normal exit and cleanup flushing.
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		receiver.mu.Lock()
+		count := len(receiver.values["beta"])
+		receiver.mu.Unlock()
+		if count == 4 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("background service did not exit and flush")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	signals <- syscall.SIGTERM
+	if err := <-result; err != nil {
+		t.Fatalf("session shutdown: %v", err)
+	}
+	if !restored {
+		t.Fatal("terminal was not restored")
+	}
+	if cmds["terminal"].Stdin != stdin || cmds["terminal"].Stdout != stdout || cmds["terminal"].Stderr != stderr {
+		t.Fatal("foreground streams not passed directly")
+	}
+	for _, name := range []string{"alpha", "beta", "terminal"} {
+		if cmds[name].ProcessState == nil {
+			t.Errorf("%s not reaped", name)
+		}
+	}
+	receiver.assert(t, map[string][]string{"alpha": {"out-line", "err-line", "out-fragment", "err-fragment"}, "beta": {"out-line", "err-line", "out-fragment", "err-fragment"}})
+	transcript := readTestFile(t, stdout.Name()) + readTestFile(t, stderr.Name())
+	if !strings.Contains(transcript, "TUI ACTIVE") || strings.Contains(transcript, "TUI session log") || strings.Contains(transcript, "out-fragment") || strings.Contains(transcript, "err-fragment") {
+		t.Fatalf("unexpected terminal output: %q", transcript)
+	}
+	if _, err := os.Stat(filepath.Join(root, ".cache", "dev")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("session log directory created: %v", err)
+	}
+}
+
+func TestRunTUIDevLokiStartupFailureCleansBackground(t *testing.T) {
+	if !processGroupsSupported() {
+		t.Skip("TUI takeover is unsupported")
+	}
+	receiver := &lokiReceiver{values: make(map[string][]string)}
+	server := httptest.NewServer(http.HandlerFunc(receiver.serve))
+	defer server.Close()
+	root := t.TempDir()
+	for _, name := range []string{"background", "terminal"} {
+		if err := os.Mkdir(filepath.Join(root, name), 0700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	stdin, stdout, stderr := openTestStream(t, "stdin"), openTestStream(t, "stdout"), openTestStream(t, "stderr")
+	var background *exec.Cmd
+	rt := testTUIRuntime(t, root, stdin, stdout, stderr, func(_ context.Context, parts []string) (*exec.Cmd, error) {
+		if parts[0] == "background" {
+			background = tuiHelperCommand("background", map[string]string{"READY": filepath.Join(root, "ready"), "RELEASE": filepath.Join(root, "never")})
+			return background, nil
+		}
+		return exec.Command(filepath.Join(root, "missing")), nil
+	})
+	rt.lokiEndpoint = server.URL
+	rt.createLog = func(string) (io.WriteCloser, string, error) {
+		t.Error("created session log")
+		return nil, "", errors.New("unexpected log creation")
+	}
+	restored := false
+	rt.snapshot = func(*os.File) (func() error, error) { return func() error { restored = true; return nil }, nil }
+	err := runTUIDevWithRuntime([]Service{{Name: "backend", Path: "background", Dev: "background"}}, Service{Name: "terminal", Path: "terminal", Archetype: "go-tui", Dev: "terminal"}, rt)
+	if err == nil || !strings.Contains(err.Error(), "failed to start") {
+		t.Fatalf("expected startup failure: %v", err)
+	}
+	if !restored || background == nil || background.ProcessState == nil {
+		t.Fatal("terminal or background cleanup incomplete")
+	}
+	if strings.Contains(readTestFile(t, stdout.Name()), "TUI session log") {
+		t.Fatal("reported a session log")
+	}
+	receiver.assert(t, map[string][]string{})
 }

@@ -81,22 +81,22 @@ func (*telemetryCommand) Run(args []string) error {
 	return nil
 }
 
-func ensureTelemetryForDev() error {
+func ensureTelemetryForDev() (string, error) {
 	cfg, err := loadTelemetryConfig()
 	if err != nil {
-		return err
+		return "", err
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 7*time.Minute)
 	defer cancel()
 	kube := telemetryKube{run: runTelemetryKubectl}
 	selected, err := kube.selectContext(ctx, "", cfg.Context)
 	if err != nil {
-		return err
+		return "", err
 	}
 	if err := kube.checkInstallation(ctx, selected, telemetryOptions{}); err != nil {
-		return err
+		return "", err
 	}
-	return connectTelemetry(ctx, selected, defaultTelemetryPorts)
+	return connectTelemetryEndpoint(ctx, selected, defaultTelemetryPorts, true)
 }
 
 var ensureTelemetryForDevHook = ensureTelemetryForDev

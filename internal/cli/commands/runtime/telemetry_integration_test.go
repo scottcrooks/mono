@@ -16,6 +16,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strconv"
 	"strings"
 	"testing"
@@ -34,6 +35,7 @@ type telemetryE2E struct {
 
 type telemetryE2EForward struct {
 	pid int
+	dir string
 }
 
 func TestTelemetryE2E(t *testing.T) {
@@ -84,6 +86,18 @@ func TestTelemetryE2E(t *testing.T) {
 	})
 	t.Logf("creating isolated cluster %s", f.name)
 	f.mustRun(f.dir, "kind", "create", "cluster", "--name", f.name, "--kubeconfig", filepath.Join(f.dir, "kubeconfig"), "--wait", "120s")
+	// Some Docker-in-VM setups publish the API on the VM gateway instead of
+	// mirroring its loopback port into the test host. Keep TLS verification
+	// against kind's loopback certificate while connecting to that gateway.
+	if host := os.Getenv("MONO_TELEMETRY_KIND_API_HOST"); host != "" {
+		server := strings.TrimSpace(string(f.mustRun(f.dir, "kubectl", "config", "view", "--minify", "-o", "jsonpath={.clusters[0].cluster.server}")))
+		parsed, err := url.Parse(server)
+		if err != nil || parsed.Port() == "" {
+			t.Fatalf("invalid kind API server %q: %v", server, err)
+		}
+		address := "https://" + net.JoinHostPort(host, parsed.Port())
+		f.mustRun(f.dir, "kubectl", "config", "set-cluster", "kind-"+f.name, "--server="+address, "--tls-server-name=127.0.0.1")
+	}
 	projectA, projectB := filepath.Join(f.dir, "project-a"), filepath.Join(f.dir, "project-b")
 	for _, project := range []string{projectA, projectB} {
 		if err := os.Mkdir(project, 0700); err != nil {
@@ -108,6 +122,7 @@ func TestTelemetryE2E(t *testing.T) {
 	}
 	f.cli(projectB, "doctor")
 	f.startForward(projectA)
+	f.verifyDevCapture(projectA, id)
 	envOut := f.cli(projectB, append([]string{"env", "--service-name=mono-e2e-" + id, "--project=fixture"}, f.portFlags...)...)
 	if !strings.Contains(string(envOut), "export OTEL_EXPORTER_OTLP_ENDPOINT='"+f.ports.url(4)+"'") {
 		t.Fatalf("env/connect port mismatch: %s", envOut)
@@ -259,7 +274,7 @@ func (f *telemetryE2E) startForward(dir string) {
 	if pid <= 0 {
 		f.t.Fatalf("connect did not record forwarding PID: %s", data)
 	}
-	f.forward = &telemetryE2EForward{pid: pid}
+	f.forward = &telemetryE2EForward{pid: pid, dir: dir}
 }
 
 func (f *telemetryE2E) stopForward() {
@@ -270,7 +285,7 @@ func (f *telemetryE2E) stopForward() {
 	}
 	f.forward = nil
 	_ = stopProcess(process.pid)
-	data, err := os.ReadFile(filepath.Join(f.dir, stateFile))
+	data, err := os.ReadFile(filepath.Join(process.dir, stateFile))
 	if err != nil {
 		f.t.Fatalf("read forwarding state: %v", err)
 	}
@@ -280,9 +295,9 @@ func (f *telemetryE2E) stopForward() {
 	}
 	delete(state.PortForwards, telemetryForwardStateKey)
 	if len(state.PortForwards) == 0 {
-		_ = os.Remove(filepath.Join(f.dir, stateFile))
+		_ = os.Remove(filepath.Join(process.dir, stateFile))
 	} else if data, err := json.Marshal(state); err == nil {
-		_ = os.WriteFile(filepath.Join(f.dir, stateFile), data, 0600)
+		_ = os.WriteFile(filepath.Join(process.dir, stateFile), data, 0600)
 	}
 	deadline := time.Now().Add(8 * time.Second)
 	for _, port := range f.ports {
@@ -381,4 +396,176 @@ func telemetryRemoteWriteFixture(metric string, timestamp int64, value float64) 
 		compressed = append(compressed, 60<<2, byte(length))
 	}
 	return append(compressed, write...)
+}
+
+// verifyDevCapture drives the real CLI with the already-connected custom-port
+// forward, then queries Loki for every service line and unexpected stream.
+func (f *telemetryE2E) verifyDevCapture(project, id string) {
+	f.t.Helper()
+	names := []string{"mono-dev-" + id + "-one", "mono-dev-" + id + "-two"}
+	tuiName := "mono-dev-" + id + "-terminal"
+	manifest := "telemetry: true\nservices:\n"
+	for i, name := range names {
+		dir := filepath.Join(project, fmt.Sprintf("service%d", i))
+		if err := os.Mkdir(dir, 0700); err != nil {
+			f.t.Fatal(err)
+		}
+		source := fmt.Sprintf(`package main
+import ("fmt"; "os")
+func main() {
+ mode, err := os.ReadFile("../mode"); if err != nil { panic(err) }
+ prefix := %q + "-" + string(mode)
+ fmt.Fprintln(os.Stdout, prefix+"-stdout")
+ fmt.Fprintln(os.Stderr, prefix+"-stderr")
+ fmt.Fprint(os.Stdout, prefix+"-stdout-tail")
+ fmt.Fprint(os.Stderr, prefix+"-stderr-tail")
+}`, name)
+		if err := os.WriteFile(filepath.Join(dir, "main.go"), []byte(source), 0600); err != nil {
+			f.t.Fatal(err)
+		}
+		manifest += fmt.Sprintf("  - name: %s\n    path: service%d\n    kind: service\n    archetype: go\n    dev: go run main.go\n", name, i)
+	}
+	tuiDir := filepath.Join(project, "terminal")
+	if err := os.Mkdir(tuiDir, 0700); err != nil {
+		f.t.Fatal(err)
+	}
+	foregroundMarker := "foreground-" + id
+	source := fmt.Sprintf(`package main
+import ("fmt"; "os"; "time")
+func main() { fmt.Println(%q); for { if _,err:=os.Stat("../release"); err == nil { return }; time.Sleep(20*time.Millisecond) } }
+`, foregroundMarker)
+	if err := os.WriteFile(filepath.Join(tuiDir, "main.go"), []byte(source), 0600); err != nil {
+		f.t.Fatal(err)
+	}
+	manifest += fmt.Sprintf("  - name: %s\n    path: terminal\n    kind: service\n    archetype: go-tui\n    dev: go run main.go\n", tuiName)
+	if err := os.WriteFile(filepath.Join(project, "services.yaml"), []byte(manifest), 0600); err != nil {
+		f.t.Fatal(err)
+	}
+	defer func() {
+		for _, name := range []string{"service0", "service1", "terminal", "services.yaml", "release", "mode", ".cache"} {
+			if err := os.RemoveAll(filepath.Join(project, name)); err != nil {
+				f.t.Errorf("remove dev fixture %s: %v", name, err)
+			}
+		}
+	}()
+	expected := map[string]map[string]int{}
+	addExpected := func(mode string) {
+		for _, name := range names {
+			if expected[name] == nil {
+				expected[name] = map[string]int{}
+			}
+			for _, suffix := range []string{"stdout", "stderr", "stdout-tail", "stderr-tail"} {
+				expected[name][name+"-"+mode+"-"+suffix] = 1
+			}
+		}
+	}
+	addExpected("ordinary")
+	if err := os.WriteFile(filepath.Join(project, "mode"), []byte("ordinary"), 0600); err != nil {
+		f.t.Fatal(err)
+	}
+
+	output := f.mustRun(project, f.binary, "dev", names[0], names[1])
+	if !bytes.Contains(output, []byte(names[0]+"-ordinary-stdout")) {
+		f.t.Fatalf("ordinary dev output missing: %s", output)
+	}
+	f.assertForwardReused(project)
+	f.eventually("ordinary dev Loki output", func() error { return f.checkDevLoki(id, expected) })
+
+	// The foreground process waits for the integration test to observe both
+	// background streams; this keeps terminal ownership active during queries.
+	if err := os.WriteFile(filepath.Join(project, "mode"), []byte("tui"), 0600); err != nil {
+		f.t.Fatal(err)
+	}
+	cmd := exec.CommandContext(f.ctx, f.binary, "dev")
+	cmd.Env, cmd.Dir, cmd.WaitDelay = f.env, project, time.Second
+	done, err := startTelemetryPTY(cmd)
+	if err != nil {
+		f.t.Fatalf("start dev under pseudo-terminal: %v", err)
+	}
+	finished := false
+	defer func() {
+		if !finished {
+			stopTelemetryPTY(cmd)
+			<-done
+		}
+	}()
+	addExpected("tui")
+	f.eventually("TUI background Loki output", func() error { return f.checkDevLoki(id, expected) })
+	f.assertForwardReused(project)
+	if err := os.WriteFile(filepath.Join(project, "release"), nil, 0600); err != nil {
+		f.t.Fatal(err)
+	}
+	select {
+	case result := <-done:
+		finished = true
+		if result.err != nil {
+			f.t.Fatalf("TUI dev: %v\n%s", result.err, result.output)
+		}
+		if !strings.Contains(result.output, foregroundMarker) || strings.Contains(result.output, "TUI session log:") {
+			f.t.Fatalf("unexpected TUI transcript: %s", result.output)
+		}
+	case <-f.ctx.Done():
+		f.t.Fatal("timed out waiting for TUI dev")
+	}
+	logs, err := filepath.Glob(filepath.Join(project, ".cache", "dev", "session-*.log"))
+	if err != nil || len(logs) != 0 {
+		f.t.Fatalf("unexpected TUI session logs: %v: %v", logs, err)
+	}
+	if err := f.checkDevLoki(id, expected); err != nil {
+		f.t.Fatalf("unexpected foreground or lifecycle capture: %v", err)
+	}
+	f.t.Log("ordinary and pseudo-terminal TUI dev output queryable by distinct jobs; foreground and lifecycle excluded")
+}
+
+func (f *telemetryE2E) assertForwardReused(project string) {
+	f.t.Helper()
+	data, err := os.ReadFile(filepath.Join(project, stateFile))
+	if err != nil {
+		f.t.Fatal(err)
+	}
+	var state InfraState
+	if err := json.Unmarshal(data, &state); err != nil {
+		f.t.Fatal(err)
+	}
+	if state.PortForwards[telemetryForwardStateKey] != f.forward.pid {
+		f.t.Fatalf("dev did not reuse custom-port forward: %s", data)
+	}
+}
+
+func (f *telemetryE2E) checkDevLoki(id string, expected map[string]map[string]int) error {
+	query := `{job=~"mono-dev-` + id + `-.*"}`
+	endpoint := f.ports.url(1) + "/loki/api/v1/query_range?" + url.Values{"query": {query}, "start": {strconv.FormatInt(time.Now().Add(-10*time.Minute).UnixNano(), 10)}, "end": {strconv.FormatInt(time.Now().Add(time.Minute).UnixNano(), 10)}, "limit": {"1000"}}.Encode()
+	data, err := f.request(http.MethodGet, endpoint, nil, nil, false)
+	if err != nil {
+		return err
+	}
+	var response struct {
+		Status string `json:"status"`
+		Data   struct {
+			Result []struct {
+				Stream map[string]string `json:"stream"`
+				Values [][2]string       `json:"values"`
+			} `json:"result"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(data, &response); err != nil {
+		return err
+	}
+	if response.Status != "success" {
+		return fmt.Errorf("query failed: %s", data)
+	}
+	actual := map[string]map[string]int{}
+	for _, stream := range response.Data.Result {
+		job := stream.Stream["job"]
+		if actual[job] == nil {
+			actual[job] = map[string]int{}
+		}
+		for _, value := range stream.Values {
+			actual[job][value[1]]++
+		}
+	}
+	if !reflect.DeepEqual(actual, expected) {
+		return fmt.Errorf("Loki jobs/values: got %v, want %v", actual, expected)
+	}
+	return nil
 }

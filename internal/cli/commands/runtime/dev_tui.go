@@ -69,6 +69,7 @@ type devTUIRuntime struct {
 	stdout         *os.File
 	stderr         *os.File
 	root           string
+	lokiEndpoint   string
 	isTerminal     func(*os.File) bool
 	snapshot       func(*os.File) (func() error, error)
 	commandFactory func(context.Context, []string) (*exec.Cmd, error)
@@ -76,7 +77,7 @@ type devTUIRuntime struct {
 	signals        <-chan os.Signal
 }
 
-func runTUIDev(background []Service, tui Service) error {
+func runTUIDev(background []Service, tui Service, endpoint string) error {
 	root, err := os.Getwd()
 	if err != nil {
 		return fmt.Errorf("resolve repository root: %w", err)
@@ -89,6 +90,7 @@ func runTUIDev(background []Service, tui Service) error {
 		stdout:         os.Stdout,
 		stderr:         os.Stderr,
 		root:           root,
+		lokiEndpoint:   endpoint,
 		isTerminal:     func(f *os.File) bool { return f != nil && term.IsTerminal(int(f.Fd())) },
 		snapshot:       snapshotTerminal,
 		commandFactory: commandFromParts,
@@ -125,17 +127,20 @@ func runTUIDevWithRuntime(background []Service, tui Service, rt devTUIRuntime) e
 	if err != nil {
 		return errors.Join(err, terminalRestore())
 	}
-	createLog := rt.createLog
-	if createLog == nil {
-		createLog = func(root string) (io.WriteCloser, string, error) {
-			return createDevSessionLog(root)
+	var logFile io.WriteCloser
+	var logPath string
+	logSink := newSessionLog(io.Discard)
+	if rt.lokiEndpoint == "" {
+		createLog := rt.createLog
+		if createLog == nil {
+			createLog = func(root string) (io.WriteCloser, string, error) { return createDevSessionLog(root) }
 		}
+		logFile, logPath, err = createLog(rt.root)
+		if err != nil {
+			return errors.Join(err, terminalRestore())
+		}
+		logSink = newSessionLog(logFile)
 	}
-	logFile, logPath, err := createLog(rt.root)
-	if err != nil {
-		return errors.Join(err, terminalRestore())
-	}
-	logSink := newSessionLog(logFile)
 	closeLog := func() error {
 		if logFile == nil {
 			return nil
@@ -145,14 +150,20 @@ func runTUIDevWithRuntime(background []Service, tui Service, rt devTUIRuntime) e
 		return err
 	}
 	printer := output.NewPrinter(rt.stdout, rt.stderr)
-	printer.StepInfo("dev", "TUI session log: "+logPath)
+	reportLog := func() {
+		if rt.lokiEndpoint == "" {
+			printer.StepInfo("dev", "TUI session log: "+logPath)
+		}
+	}
+	reportLog()
 	writeSessionLog(logSink, "[mono] session started; log: %s\n", logPath)
 	if err := logSink.Err(); err != nil {
 		restoreErr := terminalRestore()
 		closeErr := closeLog()
-		printer.StepInfo("dev", "TUI session log: "+logPath)
+		reportLog()
 		return errors.Join(fmt.Errorf("write TUI session log: %w", err), restoreErr, closeErr)
 	}
+	loki := newLokiSink(rt.lokiEndpoint)
 
 	children := make([]*devChild, 0, len(prepared))
 	backgroundChildren := make([]*devChild, 0, len(background))
@@ -166,6 +177,11 @@ func runTUIDevWithRuntime(background []Service, tui Service, rt devTUIRuntime) e
 			child.cmd.Stdout = rt.stdout
 			child.cmd.Stderr = rt.stderr
 			foreground = child
+		} else if loki != nil {
+			child.lokiStdout = &lokiLineWriter{sink: loki, job: child.service.Name}
+			child.lokiStderr = &lokiLineWriter{sink: loki, job: child.service.Name}
+			child.cmd.Stdout = child.lokiStdout
+			child.cmd.Stderr = child.lokiStderr
 		} else {
 			child.stdout = output.NewPrefixWriter("["+child.service.Name+"]", logSink)
 			child.stderr = output.NewPrefixWriter("["+child.service.Name+"]", logSink)
@@ -183,7 +199,7 @@ func runTUIDevWithRuntime(background []Service, tui Service, rt devTUIRuntime) e
 		if err := logSink.Err(); err != nil {
 			restoreErr := terminalRestore()
 			closeErr := closeLog()
-			printer.StepInfo("dev", "TUI session log: "+logPath)
+			reportLog()
 			return errors.Join(fmt.Errorf("write TUI session log: %w", err), restoreErr, closeErr)
 		}
 		if err := child.cmd.Start(); err != nil {
@@ -191,7 +207,7 @@ func runTUIDevWithRuntime(background []Service, tui Service, rt devTUIRuntime) e
 			restoreErr := terminalRestore()
 			writeSessionLog(logSink, "[mono] session ended after startup failure\n")
 			closeErr := closeLog()
-			printer.StepInfo("dev", "TUI session log: "+logPath)
+			reportLog()
 			return errors.Join(fmt.Errorf("[%s] failed to start: %w", child.service.Name, err), cleanupErr, restoreErr, logSink.Err(), closeErr)
 		}
 		startDevChild(child, events, logSink)
@@ -199,7 +215,7 @@ func runTUIDevWithRuntime(background []Service, tui Service, rt devTUIRuntime) e
 			cleanupErr := stopDevChildren(children[:len(backgroundChildren)], nil, events, logSink)
 			restoreErr := terminalRestore()
 			closeErr := closeLog()
-			printer.StepInfo("dev", "TUI session log: "+logPath)
+			reportLog()
 			return errors.Join(fmt.Errorf("write TUI session log: %w", err), cleanupErr, restoreErr, closeErr)
 		}
 	}
@@ -209,7 +225,7 @@ func runTUIDevWithRuntime(background []Service, tui Service, rt devTUIRuntime) e
 		cleanupErr := stopDevChildren(backgroundChildren, nil, events, logSink)
 		restoreErr := terminalRestore()
 		closeErr := closeLog()
-		printer.StepInfo("dev", "TUI session log: "+logPath)
+		reportLog()
 		return errors.Join(fmt.Errorf("write TUI session log: %w", err), cleanupErr, restoreErr, closeErr)
 	}
 	if err := foreground.cmd.Start(); err != nil {
@@ -217,7 +233,7 @@ func runTUIDevWithRuntime(background []Service, tui Service, rt devTUIRuntime) e
 		restoreErr := terminalRestore()
 		writeSessionLog(logSink, "[mono] session ended after TUI startup failure\n")
 		closeErr := closeLog()
-		printer.StepInfo("dev", "TUI session log: "+logPath)
+		reportLog()
 		return errors.Join(fmt.Errorf("[%s] failed to start: %w", tui.Name, err), cleanupErr, restoreErr, logSink.Err(), closeErr)
 	}
 	startDevChild(foreground, events, logSink)
@@ -283,7 +299,7 @@ func runTUIDevWithRuntime(background []Service, tui Service, rt devTUIRuntime) e
 			printer.StepErr("dev", "session log failed: "+logErr.Error())
 		}
 	}
-	printer.StepInfo("dev", "TUI session log: "+logPath)
+	reportLog()
 	if interrupted {
 		return errors.Join(cleanupErr, restoreErr, closeErr, logSink.Err())
 	}
@@ -339,11 +355,13 @@ func prepareDevChildren(background []Service, tui *Service, rt devTUIRuntime) ([
 }
 
 type devChild struct {
-	service Service
-	cmd     *exec.Cmd
-	isTUI   bool
-	stdout  *output.PrefixWriter
-	stderr  *output.PrefixWriter
+	service    Service
+	cmd        *exec.Cmd
+	isTUI      bool
+	stdout     *output.PrefixWriter
+	stderr     *output.PrefixWriter
+	lokiStdout *lokiLineWriter
+	lokiStderr *lokiLineWriter
 }
 
 type devChildResult struct {
@@ -354,6 +372,12 @@ type devChildResult struct {
 func startDevChild(child *devChild, events chan<- devChildResult, logSink *sessionLog) {
 	go func() {
 		err := child.cmd.Wait()
+		if child.lokiStdout != nil {
+			child.lokiStdout.Flush()
+		}
+		if child.lokiStderr != nil {
+			child.lokiStderr.Flush()
+		}
 		if child.stdout != nil {
 			if flushErr := child.stdout.Flush(); flushErr != nil {
 				err = errors.Join(err, flushErr)

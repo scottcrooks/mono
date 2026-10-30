@@ -336,7 +336,7 @@ func TestRunServiceDevEnvironment(t *testing.T) {
 			t.Fatal(err)
 		}
 		wg.Go(func() {
-			if err := runServiceDev(ctx, svc); err != nil {
+			if err := runServiceDev(ctx, svc, nil); err != nil {
 				t.Error(err)
 			}
 		})
@@ -364,7 +364,7 @@ func TestStreamingDevDotenvFailurePreventsLaunch(t *testing.T) {
 	original := os.Stderr
 	os.Stderr = stderr
 	defer func() { os.Stderr = original }()
-	if err := runStreamingDev([]Service{{Name: "broken", Path: "service", Dev: "go run main.go"}}); err == nil {
+	if err := runStreamingDev([]Service{{Name: "broken", Path: "service", Dev: "go run main.go"}}, ""); err == nil {
 		t.Fatal("expected startup failure")
 	}
 	message := readTestFile(t, stderr.Name())
@@ -389,7 +389,7 @@ func TestDevTelemetryEnsuresBeforeEmptyReturnAndServiceLaunch(t *testing.T) {
 		}
 		called := 0
 		old := ensureTelemetryForDevHook
-		ensureTelemetryForDevHook = func() error { called++; return nil }
+		ensureTelemetryForDevHook = func() (string, error) { called++; return "", nil }
 		defer func() { ensureTelemetryForDevHook = old }()
 		if err := (&devCommand{}).Run([]string{"mono", "dev"}); err != nil {
 			t.Fatal(err)
@@ -405,7 +405,7 @@ func TestDevTelemetryEnsuresBeforeEmptyReturnAndServiceLaunch(t *testing.T) {
 		}
 		called := 0
 		old := ensureTelemetryForDevHook
-		ensureTelemetryForDevHook = func() error { called++; return nil }
+		ensureTelemetryForDevHook = func() (string, error) { called++; return "", nil }
 		defer func() { ensureTelemetryForDevHook = old }()
 		if err := (&devCommand{}).Run([]string{"mono", "dev"}); err != nil {
 			t.Fatal(err)
@@ -428,7 +428,7 @@ func TestDevTelemetryEnsuresBeforeEmptyReturnAndServiceLaunch(t *testing.T) {
 			t.Fatal(err)
 		}
 		old := ensureTelemetryForDevHook
-		ensureTelemetryForDevHook = func() error { return errors.New("forward unavailable") }
+		ensureTelemetryForDevHook = func() (string, error) { return "", errors.New("forward unavailable") }
 		defer func() { ensureTelemetryForDevHook = old }()
 		err := (&devCommand{}).Run([]string{"mono", "dev"})
 		if err == nil || !strings.Contains(err.Error(), "forward unavailable") {

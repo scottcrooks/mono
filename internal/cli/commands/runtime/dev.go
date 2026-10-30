@@ -4,6 +4,7 @@ package runtimecmd
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -35,8 +36,10 @@ func (c *devCommand) Run(args []string) error {
 	if err != nil {
 		return err
 	}
+	var endpoint string
 	if config.Telemetry {
-		if err := ensureTelemetryForDevHook(); err != nil {
+		endpoint, err = ensureTelemetryForDevHook()
+		if err != nil {
 			return fmt.Errorf("failed to ensure telemetry forwarding: %w", err)
 		}
 	}
@@ -59,12 +62,13 @@ func (c *devCommand) Run(args []string) error {
 		return fmt.Errorf("failed to start infrastructure dependencies: %w", err)
 	}
 	if selection.tui != nil {
-		return runTUIDev(selection.background, *selection.tui)
+		return runTUIDev(selection.background, *selection.tui, endpoint)
 	}
-	return runStreamingDev(servicesToRun)
+	return runStreamingDev(servicesToRun, endpoint)
 }
 
-func runStreamingDev(servicesToRun []Service) error {
+func runStreamingDev(servicesToRun []Service, endpoint string) error {
+	sink := newLokiSink(endpoint)
 	p := output.DefaultPrinter()
 	// Create context for graceful shutdown
 	ctx, cancel := context.WithCancel(context.Background())
@@ -87,7 +91,7 @@ func runStreamingDev(servicesToRun []Service) error {
 		wg.Add(1)
 		go func(service Service) {
 			defer wg.Done()
-			if err := runServiceDev(ctx, service); err != nil {
+			if err := runServiceDev(ctx, service, sink); err != nil {
 				errChan <- fmt.Errorf("[%s] %w", service.Name, err)
 			}
 		}(svc)
@@ -221,7 +225,7 @@ func collectInfraDeps(config *Config, services []Service) ([]string, error) {
 }
 
 // runServiceDev runs a single service's dev command
-func runServiceDev(ctx context.Context, svc Service) error {
+func runServiceDev(ctx context.Context, svc Service, sink *lokiSink) error {
 	p := output.DefaultPrinter()
 	cmdString, exists := resolveDevCommand(svc)
 	if !exists {
@@ -261,6 +265,13 @@ func runServiceDev(ctx context.Context, svc Service) error {
 
 	cmd.Stdout = stdoutWriter
 	cmd.Stderr = stderrWriter
+	var stdoutCapture, stderrCapture *lokiLineWriter
+	if sink != nil {
+		stdoutCapture = &lokiLineWriter{sink: sink, job: svc.Name}
+		stderrCapture = &lokiLineWriter{sink: sink, job: svc.Name}
+		cmd.Stdout = io.MultiWriter(stdoutWriter, stdoutCapture)
+		cmd.Stderr = io.MultiWriter(stderrWriter, stderrCapture)
+	}
 
 	// Start the process
 	p.StepStart(svc.Name, "Starting...")
@@ -268,6 +279,14 @@ func runServiceDev(ctx context.Context, svc Service) error {
 		return fmt.Errorf("failed to start: %w", err)
 	}
 
+	if sink != nil {
+		defer func() {
+			stdoutCapture.Flush()
+			stderrCapture.Flush()
+			_ = stdoutWriter.Flush()
+			_ = stderrWriter.Flush()
+		}()
+	}
 	// Wait for process to complete or context cancellation
 	done := make(chan error, 1)
 	go func() {
@@ -292,6 +311,7 @@ func runServiceDev(ctx context.Context, svc Service) error {
 		case <-time.After(5 * time.Second):
 			// Force kill after timeout
 			_ = cmd.Process.Kill()
+			<-done
 			p.StepWarn(svc.Name, "Stopped (forced)")
 		}
 		return nil

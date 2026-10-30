@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -155,7 +156,7 @@ func TestTelemetryForwardLifecycle(t *testing.T) {
 				}()
 			}
 			startup := 350 * time.Millisecond
-			if tc.cancelReady || tc.mode == "lost" {
+			if tc.cancelReady || tc.mode == "lost" || tc.mode == "zero" {
 				startup = 3 * time.Second
 			}
 			err := forwardTelemetry(ctx, cmd, ports, output.NewPrinter(out, &diagnostics), &diagnostics, startup, 100*time.Millisecond)
@@ -205,6 +206,9 @@ func TestTelemetryForwardStartFailureAndStartupCancellation(t *testing.T) {
 }
 
 func TestDetachedTelemetryForwardIsTrackedAndReused(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("process ownership inspection is unsupported")
+	}
 	oldDir, err := os.Getwd()
 	if err != nil {
 		t.Fatal(err)
@@ -214,16 +218,13 @@ func TestDetachedTelemetryForwardIsTrackedAndReused(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = os.Chdir(oldDir) })
 	ports := telemetryAvailablePorts(t)
-	var values []string
-	for _, port := range ports {
-		values = append(values, strconv.Itoa(port))
-	}
 	binDir := t.TempDir()
-	script := fmt.Sprintf("#!/bin/sh\nMONO_TELEMETRY_FORWARD_HELPER=1 MONO_TELEMETRY_FORWARD_MODE=ready MONO_TELEMETRY_FORWARD_PORTS='%s' exec %q -test.run=^TestTelemetryForwardHelper$\n", strings.Join(values, ","), os.Args[0])
 	kubectl := filepath.Join(binDir, "kubectl")
-	if err := os.WriteFile(kubectl, []byte(script), 0700); err != nil {
-		t.Fatal(err)
+	build := exec.Command("go", "build", "-o", kubectl, filepath.Join(oldDir, "testdata/telemetry-forward/main.go"))
+	if output, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build kubectl fixture: %v: %s", err, output)
 	}
+
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -237,6 +238,10 @@ func TestDetachedTelemetryForwardIsTrackedAndReused(t *testing.T) {
 	}
 	if err := connectTelemetry(ctx, "test", ports); err != nil {
 		t.Fatal(err)
+	}
+	endpoint, err := connectTelemetryEndpoint(ctx, "test", defaultTelemetryPorts, true)
+	if err != nil || endpoint != ports.url(1) {
+		t.Fatalf("custom endpoint: %q, %v", endpoint, err)
 	}
 	if got := loadState().PortForwards[telemetryForwardStateKey]; got != pid {
 		t.Fatalf("healthy forward replaced: %d -> %d", pid, got)
@@ -253,7 +258,66 @@ func TestDetachedTelemetryForwardIsTrackedAndReused(t *testing.T) {
 	if recovered <= 0 || recovered == pid || !isProcessRunning(recovered) {
 		t.Fatalf("dead forward was not replaced: old=%d new=%d", pid, recovered)
 	}
-	_ = stopProcess(recovered)
+	endpoint, err = connectTelemetryEndpoint(ctx, "other-context", ports, true)
+	if err != nil || endpoint != ports.url(1) {
+		t.Fatalf("wrong-context recovery: %q, %v", endpoint, err)
+	}
+	replacement := loadState().PortForwards[telemetryForwardStateKey]
+	if replacement == recovered {
+		t.Fatal("reused a forward for the wrong context")
+	}
+	_ = stopProcess(replacement)
+
+	// A process with matching arguments is not trusted when other processes own
+	// the listeners, and it must not be signaled when recovery fails.
+	ports = telemetryAvailablePorts(t)
+	var listeners []net.Listener
+	for _, port := range ports {
+		l, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", port))
+		if err != nil {
+			t.Fatal(err)
+		}
+		listeners = append(listeners, l)
+	}
+	defer func() {
+		for _, l := range listeners {
+			_ = l.Close()
+		}
+	}()
+	impostor := exec.Command(kubectl, telemetryForwardArgs("test", ports)...)
+	impostor.Env = append(os.Environ(), "MONO_TEST_FORWARD_BLOCK=1")
+	if err := impostor.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = impostor.Process.Kill(); _ = impostor.Wait() }()
+	state = loadState()
+	state.PortForwards[telemetryForwardStateKey] = impostor.Process.Pid
+	if err := saveState(state); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := connectTelemetryEndpoint(ctx, "test", ports, true); err == nil {
+		t.Fatal("accepted unrelated listeners")
+	}
+	if !isProcessRunning(impostor.Process.Pid) {
+		t.Fatal("signaled an unverified process")
+	}
+	state = loadState()
+	state.PortForwards[telemetryForwardStateKey] = os.Getpid()
+	if err := saveState(state); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := connectTelemetryEndpoint(ctx, "test", ports, true); err == nil {
+		t.Fatal("accepted malformed tracked process")
+	}
+	for _, l := range listeners {
+		_ = l.Close()
+	}
+	t.Setenv("MONO_TEST_FORWARD_PARTIAL", "1")
+	partialCtx, cancelPartial := context.WithTimeout(context.Background(), 350*time.Millisecond)
+	defer cancelPartial()
+	if _, err := connectTelemetryEndpoint(partialCtx, "test", telemetryAvailablePorts(t), true); err == nil {
+		t.Fatal("accepted missing forwarding line")
+	}
 }
 
 func TestTelemetryEnvAndPorts(t *testing.T) {
@@ -321,5 +385,60 @@ func TestTelemetryEnvShellEscaping(t *testing.T) {
 	}
 	if _, err := os.Stat(sentinel); !os.IsNotExist(err) {
 		t.Fatal("env value executed shell commands")
+	}
+}
+
+func TestTelemetryDevReusesVerifiedForwardAcrossProjects(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("process ownership inspection is unsupported")
+	}
+	oldDir, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(oldDir) })
+	binDir := t.TempDir()
+	kubectl := filepath.Join(binDir, "kubectl")
+	build := exec.Command("go", "build", "-o", kubectl, filepath.Join(oldDir, "testdata/telemetry-forward/main.go"))
+	if output, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build kubectl fixture: %v: %s", err, output)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	first, second, wrong := t.TempDir(), t.TempDir(), t.TempDir()
+	if err := os.Chdir(first); err != nil {
+		t.Fatal(err)
+	}
+	ports := telemetryAvailablePorts(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := connectTelemetry(ctx, "fixture-context", ports); err != nil {
+		t.Fatal(err)
+	}
+	original := loadState().PortForwards[telemetryForwardStateKey]
+	t.Cleanup(func() { _ = stopProcess(original) })
+	if err := os.Chdir(second); err != nil {
+		t.Fatal(err)
+	}
+	endpoint, err := connectTelemetryEndpoint(ctx, "fixture-context", defaultTelemetryPorts, true)
+	if err != nil || endpoint != ports.url(1) {
+		t.Fatalf("reuse custom forward from another project: endpoint=%q err=%v", endpoint, err)
+	}
+	if got := loadState().PortForwards[telemetryForwardStateKey]; got != original {
+		t.Fatalf("tracked pid = %d, want existing %d", got, original)
+	}
+	if !isProcessRunning(original) {
+		t.Fatal("replaced or stopped shared forward")
+	}
+
+	// A verified process for another context must not be adopted or signaled.
+	if err := os.Chdir(wrong); err != nil {
+		t.Fatal(err)
+	}
+	endpoint, err = connectTelemetryEndpoint(ctx, "different-context", ports, true)
+	if err == nil || endpoint != "" {
+		t.Fatalf("accepted wrong-context listener: endpoint=%q err=%v", endpoint, err)
+	}
+	if !isProcessRunning(original) {
+		t.Fatal("stopped another context's forward")
 	}
 }
