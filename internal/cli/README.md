@@ -56,6 +56,13 @@ the default test suite never contacts a live cluster.
 
 ## Dev environment files
 
+Every subprocess launched by mono receives `CI=true` when its effective child
+environment does not contain `CI`. An inherited or dotenv `CI` entry wins,
+including an explicitly empty value or `CI=false`; inherited values retain the
+existing highest precedence. This changes only the child environment and does
+not change mono's own environment. The value is an environment default for child
+tools; mono does not promise that every tool changes its prompting behavior.
+
 `mono dev` supplies environment defaults from the invocation directory's `.env`
 (next to the loaded `services.yaml`) and each selected service directory's `.env`.
 This applies to streaming services, TUI background services, and the foreground TUI.

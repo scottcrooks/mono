@@ -2,6 +2,7 @@ package meta
 
 import (
 	"fmt"
+	"github.com/scottcrooks/mono/internal/cli/core"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -76,7 +77,7 @@ func collectMetadata() metadataInfo {
 }
 
 func runMetadataGit(args ...string) (string, error) {
-	cmd := exec.Command("git", args...) //nolint:gosec // G204: binary is static and args are fixed in code paths above.
+	cmd := core.CommandWithDefaultCI("git", args...) //nolint:gosec // G204: binary is static and args are fixed in code paths above.
 	out, err := cmd.Output()
 	if err != nil {
 		return "", err

@@ -3,6 +3,7 @@ package runtimecmd
 import (
 	"context"
 	"fmt"
+	"github.com/scottcrooks/mono/internal/cli/core"
 	"io"
 	"net"
 	"net/http"
@@ -153,7 +154,7 @@ func connectTelemetryEndpoint(ctx context.Context, selected string, ports teleme
 			return actual.url(1), nil
 		}
 	}
-	cmd := exec.Command("kubectl", telemetryForwardArgs(selected, ports)...)
+	cmd := core.CommandWithDefaultCI("kubectl", telemetryForwardArgs(selected, ports)...)
 	devNull, err := os.OpenFile(os.DevNull, os.O_RDONLY, 0)
 	if err != nil {
 		return "", err

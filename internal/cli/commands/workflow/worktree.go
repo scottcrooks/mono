@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/scottcrooks/mono/internal/cli/core"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -121,7 +122,7 @@ func runWorktreeCreate(args []string) error {
 		}
 	}
 
-	addCmd := exec.Command("git", "worktree", "add", "-b", branch, dest, fromRef)
+	addCmd := core.CommandWithDefaultCI("git", "worktree", "add", "-b", branch, dest, fromRef)
 	addCmd.Stdout = os.Stdout
 	addCmd.Stderr = os.Stderr
 	if runErr := addCmd.Run(); runErr != nil {
@@ -310,7 +311,7 @@ func runWorktreeRemove(args []string) error {
 	}
 	removeArgs = append(removeArgs, entry.Path)
 
-	cmd := exec.Command("git", removeArgs...)
+	cmd := core.CommandWithDefaultCI("git", removeArgs...)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	if runErr := cmd.Run(); runErr != nil {
@@ -335,7 +336,7 @@ func runWorktreePrune(args []string) error {
 
 	p := output.DefaultPrinter()
 
-	cmd := exec.Command("git", "worktree", "prune")
+	cmd := core.CommandWithDefaultCI("git", "worktree", "prune")
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	if runErr := cmd.Run(); runErr != nil {
@@ -530,7 +531,7 @@ func runWorktreePruneSelected(options worktreePruneOptions) error {
 			removeArgs = append(removeArgs, "--force")
 		}
 		removeArgs = append(removeArgs, entry.Path)
-		cmd := exec.Command("git", removeArgs...)
+		cmd := core.CommandWithDefaultCI("git", removeArgs...)
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr
 		if removeErr := cmd.Run(); removeErr != nil {
@@ -551,7 +552,7 @@ func runWorktreePruneSelected(options worktreePruneOptions) error {
 	if options.dryRun {
 		return nil
 	}
-	pruneCmd := exec.Command("git", "worktree", "prune")
+	pruneCmd := core.CommandWithDefaultCI("git", "worktree", "prune")
 	pruneCmd.Stdout = os.Stdout
 	pruneCmd.Stderr = os.Stderr
 	if pruneErr := pruneCmd.Run(); pruneErr != nil {
@@ -752,7 +753,7 @@ func printWorktreeHeader(p output.Printer, path string, status worktreeWorkflowS
 }
 
 func gitRepoRoot() (string, error) {
-	cmd := exec.Command("git", "rev-parse", "--show-toplevel")
+	cmd := core.CommandWithDefaultCI("git", "rev-parse", "--show-toplevel")
 	out, err := cmd.Output()
 	if err != nil {
 		return "", fmt.Errorf("failed to detect git repository root (run inside a git repo): %w", err)
@@ -805,7 +806,7 @@ type gitWorktreeEntry struct {
 }
 
 func gitWorktreeEntries() ([]gitWorktreeEntry, error) {
-	cmd := exec.Command("git", "worktree", "list", "--porcelain")
+	cmd := core.CommandWithDefaultCI("git", "worktree", "list", "--porcelain")
 	out, err := cmd.Output()
 	if err != nil {
 		return nil, fmt.Errorf("git worktree list failed: %w", err)
@@ -885,7 +886,7 @@ func resolveWorktreeFromEntries(entries []gitWorktreeEntry, identifier string) (
 }
 
 func isWorktreeDirty(path string) (bool, error) {
-	cmd := exec.Command("git", "-C", path, "status", "--porcelain")
+	cmd := core.CommandWithDefaultCI("git", "-C", path, "status", "--porcelain")
 	out, err := cmd.Output()
 	if err != nil {
 		return false, fmt.Errorf("failed to inspect worktree status for %s: %w", path, err)
@@ -907,8 +908,9 @@ func resolveWorktreeCreateBase(repoRoot, requestedRef string, p output.Printer) 
 	}
 
 	for _, remote := range preferredWorktreeRemotes(remotes) {
-		fetchCmd := exec.Command("git", "fetch", "--prune", remote)
+		fetchCmd := core.CommandWithDefaultCI("git", "fetch", "--prune", remote)
 		fetchCmd.Dir = repoRoot
+		fetchCmd.Env = core.WithDefaultCI(fetchCmd.Environ())
 		fetchCmd.Stdout = os.Stdout
 		fetchCmd.Stderr = os.Stderr
 		if runErr := fetchCmd.Run(); runErr != nil {
@@ -951,8 +953,9 @@ func defaultMergeBaseBranch() (string, error) {
 		return "", err
 	}
 
-	originHeadCmd := exec.Command("git", "symbolic-ref", "--short", "refs/remotes/origin/HEAD")
+	originHeadCmd := core.CommandWithDefaultCI("git", "symbolic-ref", "--short", "refs/remotes/origin/HEAD")
 	originHeadCmd.Dir = repoRoot
+	originHeadCmd.Env = core.WithDefaultCI(originHeadCmd.Environ())
 	if out, err := originHeadCmd.Output(); err == nil {
 		branch := strings.TrimSpace(string(out))
 		if branch != "" {
@@ -961,8 +964,9 @@ func defaultMergeBaseBranch() (string, error) {
 	}
 
 	for _, candidate := range []string{"main", "master", "origin/main", "origin/master"} {
-		verifyCmd := exec.Command("git", "rev-parse", "--verify", "--quiet", candidate+"^{commit}")
+		verifyCmd := core.CommandWithDefaultCI("git", "rev-parse", "--verify", "--quiet", candidate+"^{commit}")
 		verifyCmd.Dir = repoRoot
+		verifyCmd.Env = core.WithDefaultCI(verifyCmd.Environ())
 		if err := verifyCmd.Run(); err == nil {
 			return candidate, nil
 		}
@@ -972,8 +976,9 @@ func defaultMergeBaseBranch() (string, error) {
 }
 
 func gitRemoteNames(repoRoot string) ([]string, error) {
-	cmd := exec.Command("git", "remote")
+	cmd := core.CommandWithDefaultCI("git", "remote")
 	cmd.Dir = repoRoot
+	cmd.Env = core.WithDefaultCI(cmd.Environ())
 	out, err := cmd.Output()
 	if err != nil {
 		return nil, fmt.Errorf("git remote failed: %w", err)
@@ -1007,8 +1012,9 @@ func preferredWorktreeRemotes(remotes []string) []string {
 func defaultRemoteBaseBranch(repoRoot string, remotes []string) (remoteName, branchName, remoteRef string, err error) {
 	preferredRemotes := preferredWorktreeRemotes(remotes)
 	for _, remote := range preferredRemotes {
-		headCmd := exec.Command("git", "symbolic-ref", "--short", "refs/remotes/"+remote+"/HEAD")
+		headCmd := core.CommandWithDefaultCI("git", "symbolic-ref", "--short", "refs/remotes/"+remote+"/HEAD")
 		headCmd.Dir = repoRoot
+		headCmd.Env = core.WithDefaultCI(headCmd.Environ())
 		if out, headErr := headCmd.Output(); headErr == nil {
 			ref := strings.TrimSpace(string(out))
 			prefix := remote + "/"
@@ -1024,8 +1030,9 @@ func defaultRemoteBaseBranch(repoRoot string, remotes []string) (remoteName, bra
 	for _, remote := range preferredRemotes {
 		for _, branch := range []string{"main", "master"} {
 			ref := remote + "/" + branch
-			verifyCmd := exec.Command("git", "rev-parse", "--verify", "--quiet", ref+"^{commit}")
+			verifyCmd := core.CommandWithDefaultCI("git", "rev-parse", "--verify", "--quiet", ref+"^{commit}")
 			verifyCmd.Dir = repoRoot
+			verifyCmd.Env = core.WithDefaultCI(verifyCmd.Environ())
 			if verifyCmd.Run() == nil {
 				return remote, branch, ref, nil
 			}
@@ -1036,14 +1043,16 @@ func defaultRemoteBaseBranch(repoRoot string, remotes []string) (remoteName, bra
 }
 
 func fastForwardLocalBranch(repoRoot, branchName, remoteRef string) (bool, error) {
-	verifyCmd := exec.Command("git", "rev-parse", "--verify", "--quiet", "refs/heads/"+branchName)
+	verifyCmd := core.CommandWithDefaultCI("git", "rev-parse", "--verify", "--quiet", "refs/heads/"+branchName)
 	verifyCmd.Dir = repoRoot
+	verifyCmd.Env = core.WithDefaultCI(verifyCmd.Environ())
 	if verifyCmd.Run() != nil {
 		return false, nil
 	}
 
-	listCmd := exec.Command("git", "branch", "--format=%(refname:short)|%(worktreepath)")
+	listCmd := core.CommandWithDefaultCI("git", "branch", "--format=%(refname:short)|%(worktreepath)")
 	listCmd.Dir = repoRoot
+	listCmd.Env = core.WithDefaultCI(listCmd.Environ())
 	out, err := listCmd.Output()
 	if err != nil {
 		return false, fmt.Errorf("git branch --format failed: %w", err)
@@ -1062,8 +1071,9 @@ func fastForwardLocalBranch(repoRoot, branchName, remoteRef string) (bool, error
 		}
 	}
 
-	updateCmd := exec.Command("git", "branch", "-f", branchName, remoteRef)
+	updateCmd := core.CommandWithDefaultCI("git", "branch", "-f", branchName, remoteRef)
 	updateCmd.Dir = repoRoot
+	updateCmd.Env = core.WithDefaultCI(updateCmd.Environ())
 	updateCmd.Stdout = os.Stdout
 	updateCmd.Stderr = os.Stderr
 	if err := updateCmd.Run(); err != nil {
@@ -1194,8 +1204,9 @@ func worktreeStatusStorePath() (string, error) {
 		return "", err
 	}
 
-	cmd := exec.Command("git", "rev-parse", "--path-format=absolute", "--git-common-dir")
+	cmd := core.CommandWithDefaultCI("git", "rev-parse", "--path-format=absolute", "--git-common-dir")
 	cmd.Dir = repoRoot
+	cmd.Env = core.WithDefaultCI(cmd.Environ())
 	if out, err := cmd.Output(); err == nil {
 		commonDir := strings.TrimSpace(string(out))
 		if commonDir != "" {
@@ -1203,8 +1214,9 @@ func worktreeStatusStorePath() (string, error) {
 		}
 	}
 
-	fallbackCmd := exec.Command("git", "rev-parse", "--git-common-dir")
+	fallbackCmd := core.CommandWithDefaultCI("git", "rev-parse", "--git-common-dir")
 	fallbackCmd.Dir = repoRoot
+	fallbackCmd.Env = core.WithDefaultCI(fallbackCmd.Environ())
 	out, err := fallbackCmd.Output()
 	if err != nil {
 		return "", fmt.Errorf("failed to locate git common dir: %w", err)
@@ -1229,7 +1241,7 @@ func normalizeWorktreePath(path string) string {
 }
 
 func isBranchMergedIntoBase(branch, base string) (bool, error) {
-	cmd := exec.Command("git", "merge-base", "--is-ancestor", branch, base)
+	cmd := core.CommandWithDefaultCI("git", "merge-base", "--is-ancestor", branch, base)
 	if err := cmd.Run(); err != nil {
 		var exitErr *exec.ExitError
 		if errors.As(err, &exitErr) && exitErr.ExitCode() == 1 {
@@ -1246,8 +1258,9 @@ func runBootstrap(worktreePath string) error {
 	bootstrapScript := filepath.Join(worktreePath, "scripts", "bootstrap")
 	if info, err := os.Stat(bootstrapScript); err == nil && info.Mode().IsRegular() && info.Mode()&0o111 != 0 {
 		p.StepStart("worktree", "Running bootstrap script: "+bootstrapScript)
-		cmd := exec.Command(bootstrapScript)
+		cmd := core.CommandWithDefaultCI(bootstrapScript)
 		cmd.Dir = worktreePath
+		cmd.Env = core.WithDefaultCI(cmd.Environ())
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr
 		if runErr := cmd.Run(); runErr != nil {
@@ -1261,8 +1274,9 @@ func runBootstrap(worktreePath string) error {
 	content, err := os.ReadFile(makefilePath)
 	if err == nil && hasDoctorTarget(string(content)) {
 		p.StepStart("worktree", "Running bootstrap command: make doctor")
-		cmd := exec.Command("make", "doctor")
+		cmd := core.CommandWithDefaultCI("make", "doctor")
 		cmd.Dir = worktreePath
+		cmd.Env = core.WithDefaultCI(cmd.Environ())
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr
 		if runErr := cmd.Run(); runErr != nil {
@@ -1404,6 +1418,8 @@ func runWorktreeRequirements(worktreePath string) error {
 			return fmt.Errorf("[%s] invalid reqs command: %w", svc.Name, err)
 		}
 		cmd.Dir = servicePath
+		cmd.Env = core.WithDefaultCI(cmd.Environ())
+		cmd.Env = core.WithDefaultCI(cmd.Environ())
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr
 		cmd.Stdin = os.Stdin

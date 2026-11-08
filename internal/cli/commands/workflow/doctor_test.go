@@ -457,6 +457,50 @@ func TestInstallServiceDependenciesInstallsSupportedArchetypeDependencies(t *tes
 	}
 }
 
+func TestInstallPNPMDependenciesDefaultsCIAndPreservesExplicitValue(t *testing.T) {
+	for _, tc := range []struct{ name, ci, want string }{{"default", "__unset__", "true"}, {"empty", "", ""}, {"false", "false", "false"}} {
+		t.Run(tc.name, func(t *testing.T) {
+			bin := t.TempDir()
+			capture := filepath.Join(t.TempDir(), "env")
+			mustWrite(t, filepath.Join(bin, "pnpm"), "#!/bin/sh\nprintf '%s|%s' \"${CI-unset}\" \"$MARKER\" > \"$CAPTURE\"\n")
+			if err := os.Chmod(filepath.Join(bin, "pnpm"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+			t.Setenv("MARKER", "preserved")
+			t.Setenv("CAPTURE", capture)
+			if tc.ci == "__unset__" {
+				prior, present := os.LookupEnv("CI")
+				_ = os.Unsetenv("CI")
+				t.Cleanup(func() {
+					if present {
+						_ = os.Setenv("CI", prior)
+					} else {
+						_ = os.Unsetenv("CI")
+					}
+				})
+			} else {
+				t.Setenv("CI", tc.ci)
+			}
+			parent, present := os.LookupEnv("CI")
+			if err := installPNPMDependencies(bin, false); err != nil {
+				t.Fatal(err)
+			}
+			got, err := os.ReadFile(capture)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(got) != tc.want+"|preserved" {
+				t.Fatalf("child env = %q", got)
+			}
+			after, afterPresent := os.LookupEnv("CI")
+			if parent != after || present != afterPresent {
+				t.Fatal("parent CI changed")
+			}
+		})
+	}
+}
+
 func TestInstallGitHooksConfiguresHooksPathAndCommitTemplateWhenPresent(t *testing.T) {
 	repo := initGitRepo(t)
 	mustWrite(t, filepath.Join(repo, ".gitmessage"), "subject\n\nbody\n")

@@ -284,6 +284,7 @@ func main() {
   if strings.HasPrefix(key, "MONO_DEV_FIXTURE_") { values[key] = value }
  }
  values["cwd"], _ = os.Getwd()
+  values["CI"] = os.Getenv("CI")
  data, _ := json.Marshal(values)
  if err := os.WriteFile(os.Args[1], data, 0600); err != nil { panic(err) }
 }
@@ -291,6 +292,15 @@ func main() {
 
 func devEnvironmentFixture(t *testing.T) (string, []Service) {
 	t.Helper()
+	priorCI, hadCI := os.LookupEnv("CI")
+	_ = os.Unsetenv("CI")
+	t.Cleanup(func() {
+		if hadCI {
+			_ = os.Setenv("CI", priorCI)
+		} else {
+			_ = os.Unsetenv("CI")
+		}
+	})
 	t.Setenv("MONO_DEV_FIXTURE_SHELL", "inherited")
 	t.Setenv("MONO_DEV_FIXTURE_EMPTY", "")
 	root := t.TempDir()
@@ -315,7 +325,7 @@ func assertDevEnvironmentReport(t *testing.T, path, dir, name string) {
 		t.Fatal(err)
 	}
 	want := map[string]string{
-		"cwd": dir, "MONO_DEV_FIXTURE_ROOT": "default", "MONO_DEV_FIXTURE_OWN": name,
+		"cwd": dir, "CI": "true", "MONO_DEV_FIXTURE_ROOT": "default", "MONO_DEV_FIXTURE_OWN": name,
 		"MONO_DEV_FIXTURE_ONLY_" + name: "yes", "MONO_DEV_FIXTURE_SHELL": "inherited", "MONO_DEV_FIXTURE_EMPTY": "",
 	}
 	if !reflect.DeepEqual(got, want) {

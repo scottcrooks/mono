@@ -256,6 +256,7 @@ func runServiceDev(ctx context.Context, svc Service, sink *lokiSink) error {
 	if err != nil {
 		return err
 	}
+	cmd.Env = core.WithDefaultCI(cmd.Env)
 
 	// Create per-service colored prefix writers for easier multi-service log scanning.
 	mode := p.Mode()

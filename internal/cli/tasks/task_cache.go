@@ -80,7 +80,11 @@ func buildTaskCacheKey(svc Service, task TaskName, command string) (string, erro
 
 	pieces := []string{string(task), command, svc.Name, normalizeServicePath(svc.Path)}
 	for _, env := range cacheEnvWhitelist {
-		pieces = append(pieces, env+"="+os.Getenv(env))
+		value, present := os.LookupEnv(env)
+		if env == "CI" && !present {
+			value = "true"
+		}
+		pieces = append(pieces, env+"="+value)
 	}
 	sort.Strings(pieces)
 	for _, p := range pieces {

@@ -159,6 +159,9 @@ func (e taskExecutor) execute(ctx context.Context, graph *taskGraph, opts TaskRu
 					serviceDir, err = filepath.Abs(resolved.Service.Path)
 					if err == nil {
 						childEnv, err = core.BuildEnvironment(root, serviceDir, "test.env", os.Environ())
+						if err == nil {
+							childEnv = core.WithDefaultCI(childEnv)
+						}
 					}
 				}
 				if err != nil {
@@ -430,6 +433,8 @@ func runTaskCommand(ctx context.Context, printer output.Printer, svc Service, no
 	cmd.Dir = absPath
 	if childEnv != nil {
 		cmd.Env = childEnv
+	} else {
+		cmd.Env = core.WithDefaultCI(cmd.Environ())
 	}
 	if stdoutWriter == nil {
 		stdoutWriter = os.Stdout

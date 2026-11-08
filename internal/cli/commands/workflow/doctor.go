@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -58,7 +57,7 @@ func (c *doctorCommand) Run(_ []string) error {
 		recordFailure("Go is not installed", err)
 	} else {
 		goInstalled = true
-		cmd := exec.Command("go", "version")
+		cmd := core.CommandWithDefaultCI("go", "version")
 		if output, err := cmd.Output(); err == nil {
 			p.Summary(strings.TrimSpace(string(output)))
 			p.StepOK("doctor", "Go is installed")
@@ -89,7 +88,7 @@ func (c *doctorCommand) Run(_ []string) error {
 		p.Summary("  Install from: https://nodejs.org/ or use nvm")
 		recordFailure("Node.js is not installed", err)
 	} else {
-		cmd := exec.Command("node", "--version")
+		cmd := core.CommandWithDefaultCI("node", "--version")
 		if output, err := cmd.Output(); err == nil {
 			p.Summary(strings.TrimSpace(string(output)))
 			p.StepOK("doctor", "Node.js is installed")
@@ -103,7 +102,8 @@ func (c *doctorCommand) Run(_ []string) error {
 	if err := checkCommand("pnpm", "--version"); err != nil {
 		p.StepErr("doctor", "pnpm is NOT installed")
 		p.StepStart("doctor", "Installing pnpm...")
-		installCmd := exec.Command("npm", "install", "-g", "pnpm")
+		installCmd := core.CommandWithDefaultCI("npm", "install", "-g", "pnpm")
+		installCmd.Env = core.WithDefaultCI(installCmd.Environ())
 		installCmd.Stdout = os.Stdout
 		installCmd.Stderr = os.Stderr
 		if err := installCmd.Run(); err != nil {
@@ -115,7 +115,7 @@ func (c *doctorCommand) Run(_ []string) error {
 		}
 	} else {
 		pnpmInstalled = true
-		cmd := exec.Command("pnpm", "--version")
+		cmd := core.CommandWithDefaultCI("pnpm", "--version")
 		if output, err := cmd.Output(); err == nil {
 			p.Summary(strings.TrimSpace(string(output)))
 			p.StepOK("doctor", "pnpm is installed")
@@ -128,7 +128,7 @@ func (c *doctorCommand) Run(_ []string) error {
 	if err := checkCommand("kubectl", "version", "--client"); err != nil {
 		p.Summary("not installed")
 	} else {
-		cmd := exec.Command("kubectl", "version", "--client")
+		cmd := core.CommandWithDefaultCI("kubectl", "version", "--client")
 		if output, err := cmd.Output(); err == nil {
 			// Extract just the version line
 			lines := strings.Split(string(output), "\n")
@@ -166,7 +166,8 @@ func (c *doctorCommand) Run(_ []string) error {
 	} else if !pnpmInstalled {
 		p.StepWarn("doctor", "pnpm is unavailable; skipping pnpm install")
 	} else {
-		pnpmCmd := exec.Command("pnpm", "install", "--frozen-lockfile")
+		pnpmCmd := core.CommandWithDefaultCI("pnpm", "install", "--frozen-lockfile")
+		pnpmCmd.Env = core.WithDefaultCI(pnpmCmd.Environ())
 		pnpmCmd.Stdout = os.Stdout
 		pnpmCmd.Stderr = os.Stderr
 		if err := pnpmCmd.Run(); err != nil {
@@ -263,7 +264,7 @@ func (c *doctorCommand) Run(_ []string) error {
 
 // checkCommand checks if a command is available and runs successfully
 func checkCommand(name string, args ...string) error {
-	cmd := exec.Command(name, args...)
+	cmd := core.CommandWithDefaultCI(name, args...)
 	cmd.Stdout = nil
 	cmd.Stderr = nil
 	return cmd.Run()
@@ -291,7 +292,8 @@ func installGoTools() (int, error) {
 	for _, tool := range missing {
 		p.Summary(fmt.Sprintf("  Installing missing tool %s...", tool))
 		//nolint:gosec // G204: tool paths are from go.mod, trusted input
-		cmd := exec.Command("go", "install", tool)
+		cmd := core.CommandWithDefaultCI("go", "install", tool)
+		cmd.Env = core.WithDefaultCI(cmd.Environ())
 		cmd.Stdout = nil // Suppress output unless there's an error
 		cmd.Stderr = os.Stderr
 		if err := cmd.Run(); err != nil {
@@ -368,7 +370,7 @@ func missingGoTools(tools []string) []string {
 
 func isGoToolAvailable(tool string) bool {
 	name := toolBinaryName(tool)
-	cmd := exec.Command("go", "tool", name, "-h")
+	cmd := core.CommandWithDefaultCI("go", "tool", name, "-h")
 	output, err := cmd.CombinedOutput()
 	if err == nil {
 		return true
@@ -390,7 +392,7 @@ func toolBinaryName(toolPath string) string {
 
 // checkGoFixSupport verifies go fix can execute its underlying toolchain command.
 func checkGoFixSupport() error {
-	helpCmd := exec.Command("go", "fix", "-h")
+	helpCmd := core.CommandWithDefaultCI("go", "fix", "-h")
 	helpOutput, helpErr := helpCmd.CombinedOutput()
 	if helpErr == nil {
 		return nil
@@ -400,7 +402,7 @@ func checkGoFixSupport() error {
 		return fmt.Errorf("go fix command is unavailable (output: %s)", helpCombined)
 	}
 
-	cmd := exec.Command("go", "tool", "fix", "-h")
+	cmd := core.CommandWithDefaultCI("go", "tool", "fix", "-h")
 	output, err := cmd.CombinedOutput()
 	if err == nil {
 		return nil
@@ -418,7 +420,7 @@ func checkGoFixSupport() error {
 func printGoToolchainDiagnostics() {
 	p := output.DefaultPrinter()
 
-	cmd := exec.Command("go", "env", "GOROOT", "GOTOOLDIR", "GOVERSION")
+	cmd := core.CommandWithDefaultCI("go", "env", "GOROOT", "GOTOOLDIR", "GOVERSION")
 	output, err := cmd.Output()
 	if err != nil {
 		p.Summary("  Unable to read Go toolchain diagnostics")
@@ -450,7 +452,7 @@ func installGitHooks() error {
 	}
 
 	// Configure repository-local hooks path.
-	gitConfigCmd := exec.Command("git", "config", "core.hooksPath", hooksPath)
+	gitConfigCmd := core.CommandWithDefaultCI("git", "config", "core.hooksPath", hooksPath)
 	gitConfigCmd.Stdout = nil
 	gitConfigCmd.Stderr = os.Stderr
 	if err := gitConfigCmd.Run(); err != nil {
@@ -459,7 +461,7 @@ func installGitHooks() error {
 	p.Summary(fmt.Sprintf("  Configured git core.hooksPath=%s", hooksPath))
 
 	if commitTemplatePath := findCommitTemplatePath(); commitTemplatePath != "" {
-		gitConfigCmd = exec.Command("git", "config", "commit.template", commitTemplatePath)
+		gitConfigCmd = core.CommandWithDefaultCI("git", "config", "commit.template", commitTemplatePath)
 		gitConfigCmd.Stdout = nil
 		gitConfigCmd.Stderr = os.Stderr
 		if err := gitConfigCmd.Run(); err != nil {
@@ -730,8 +732,9 @@ func installPNPMDependencies(dir string, frozen bool) error {
 	if frozen {
 		args = append(args, "--frozen-lockfile")
 	}
-	cmd := exec.Command("pnpm", args...)
+	cmd := core.CommandWithDefaultCI("pnpm", args...)
 	cmd.Dir = dir
+	cmd.Env = core.WithDefaultCI(cmd.Environ())
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	if err := cmd.Run(); err != nil {
@@ -742,8 +745,9 @@ func installPNPMDependencies(dir string, frozen bool) error {
 
 func runDependencyInstallTarget(target tasks.DependencyInstallTarget) error {
 	parts := strings.Fields(target.Command)
-	cmd := exec.Command(parts[0], parts[1:]...)
+	cmd := core.CommandWithDefaultCI(parts[0], parts[1:]...)
 	cmd.Dir = target.Dir
+	cmd.Env = core.WithDefaultCI(cmd.Environ())
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	if err := cmd.Run(); err != nil {

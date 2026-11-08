@@ -5,7 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"os/exec"
+	"github.com/scottcrooks/mono/internal/cli/core"
 	"strings"
 	"time"
 )
@@ -34,7 +34,7 @@ func (b *telemetryOutput) Write(p []byte) (int, error) {
 func runTelemetryKubectl(ctx context.Context, args []string, input []byte) ([]byte, error) {
 	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, "kubectl", args...)
+	cmd := core.CommandContextWithDefaultCI(ctx, "kubectl", args...)
 	cmd.WaitDelay = time.Second
 	cmd.Stdin = bytes.NewReader(input)
 	stdout := &telemetryOutput{limit: 1024 * 1024}

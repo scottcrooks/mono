@@ -3,7 +3,10 @@ package tasks
 import (
 	"bytes"
 	"context"
+	"errors"
 	"io"
+	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -12,6 +15,59 @@ import (
 
 	"github.com/scottcrooks/mono/internal/cli/output"
 )
+
+func TestExecuteDependencyInstallCommandChildEnvironment(t *testing.T) {
+	for _, ci := range []struct{ name, value, want string }{{"absent", "__unset__", "true"}, {"empty", "", ""}, {"false", "false", "false"}} {
+		t.Run(ci.name, func(t *testing.T) {
+			bin := t.TempDir()
+			capture := filepath.Join(t.TempDir(), "env")
+			writeFile(t, bin, "pnpm", "#!/bin/sh\nprintf '%s|%s' \"${CI-unset}\" \"$MARKER\" > \"$CAPTURE\"\n")
+			if err := os.Chmod(filepath.Join(bin, "pnpm"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			oldPath := os.Getenv("PATH")
+			t.Setenv("PATH", bin+string(os.PathListSeparator)+oldPath)
+			t.Setenv("MARKER", "preserved")
+			if ci.value == "__unset__" {
+				_ = os.Unsetenv("CI")
+				t.Cleanup(func() { _ = os.Setenv("CI", ci.want) })
+			} else {
+				t.Setenv("CI", ci.value)
+			}
+			t.Setenv("CAPTURE", capture)
+			parentCI, parentPresent := os.LookupEnv("CI")
+			err := executeDependencyInstallCommand(context.Background(), DependencyInstallTarget{Archetype: "ts-node", Dir: bin, Command: "pnpm install"}, io.Discard, io.Discard)
+			if err != nil {
+				t.Fatalf("install failed: %v", err)
+			}
+			got, err := os.ReadFile(capture)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(got) != ci.want+"|preserved" {
+				t.Fatalf("child env = %q", got)
+			}
+			afterCI, afterPresent := os.LookupEnv("CI")
+			if afterCI != parentCI || afterPresent != parentPresent {
+				t.Fatalf("parent CI changed: before %q/%v after %q/%v", parentCI, parentPresent, afterCI, afterPresent)
+			}
+		})
+	}
+	t.Run("failure", func(t *testing.T) {
+		bin := t.TempDir()
+		writeFile(t, bin, "pnpm", "#!/bin/sh\nexit 17\n")
+		_ = os.Chmod(filepath.Join(bin, "pnpm"), 0o755)
+		t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+		err := executeDependencyInstallCommand(context.Background(), DependencyInstallTarget{Dir: bin, Command: "pnpm install"}, io.Discard, io.Discard)
+		if err == nil {
+			t.Fatal("expected install failure")
+		}
+		var exitErr *exec.ExitError
+		if !errors.As(err, &exitErr) {
+			t.Fatalf("failure not propagated: %v", err)
+		}
+	})
+}
 
 func TestDependencyInstallTargetsForServicesDedupesByResolvedRoot(t *testing.T) {
 	repo := t.TempDir()

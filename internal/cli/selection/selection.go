@@ -2,7 +2,6 @@ package selection
 
 import (
 	"fmt"
-	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -244,7 +243,7 @@ func sortedKeys[T any](set map[string]T) []string {
 }
 
 func gitOutput(args ...string) (string, error) {
-	cmd := exec.Command("git", args...)
+	cmd := core.CommandWithDefaultCI("git", args...)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return "", fmt.Errorf("git %s failed: %w (%s)", strings.Join(args, " "), err, strings.TrimSpace(string(out)))

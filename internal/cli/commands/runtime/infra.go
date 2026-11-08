@@ -3,8 +3,8 @@ package runtimecmd
 import (
 	"encoding/json"
 	"fmt"
+	"github.com/scottcrooks/mono/internal/cli/core"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -82,12 +82,12 @@ func checkKubectl() error {
 	p := output.DefaultPrinter()
 
 	// Check if kubectl is installed
-	if err := exec.Command("kubectl", "version", "--client").Run(); err != nil {
+	if err := core.CommandWithDefaultCI("kubectl", "version", "--client").Run(); err != nil {
 		return fmt.Errorf("kubectl is not installed or not in PATH")
 	}
 
 	// Get current context
-	cmd := exec.Command("kubectl", "config", "current-context")
+	cmd := core.CommandWithDefaultCI("kubectl", "config", "current-context")
 	output, err := cmd.Output()
 	if err != nil {
 		return fmt.Errorf("failed to get current kubectl context: %w", err)
@@ -97,7 +97,7 @@ func checkKubectl() error {
 	p.StepStart("infra", "Using kubectl context: "+context)
 
 	// Fail fast if the current context's API server is unreachable.
-	readyCmd := exec.Command("kubectl", "--request-timeout="+kubeAPICheckTimeout, "get", "--raw=/readyz")
+	readyCmd := core.CommandWithDefaultCI("kubectl", "--request-timeout="+kubeAPICheckTimeout, "get", "--raw=/readyz")
 	readyOutput, err := readyCmd.CombinedOutput()
 	if err != nil {
 		detail := strings.TrimSpace(string(readyOutput))
@@ -153,8 +153,8 @@ func infraUp(args []string) error {
 
 	// Create namespace (idempotent)
 	p.StepStart("infra", "Creating namespace: "+local.Namespace)
-	createNsCmd := exec.Command("kubectl", "create", "namespace", local.Namespace, "--dry-run=client", "-o", "yaml") //nolint:gosec // G204: namespace validated by validateKubeName above; no shell involved
-	applyNsCmd := exec.Command("kubectl", "apply", "-f", "-")
+	createNsCmd := core.CommandWithDefaultCI("kubectl", "create", "namespace", local.Namespace, "--dry-run=client", "-o", "yaml") //nolint:gosec // G204: namespace validated by validateKubeName above; no shell involved
+	applyNsCmd := core.CommandWithDefaultCI("kubectl", "apply", "-f", "-")
 	pipe, err := createNsCmd.StdoutPipe()
 	if err != nil {
 		return fmt.Errorf("failed to create namespace pipe: %w", err)
@@ -196,7 +196,7 @@ func infraUp(args []string) error {
 			return fmt.Errorf("failed to resolve manifest path for %s: %w", res.Name, err)
 		}
 
-		applyCmd := exec.Command("kubectl", "apply", "-n", local.Namespace, "-f", manifestPath) //nolint:gosec // G204: namespace validated by validateKubeName above; manifestPath resolved via filepath.Abs; no shell involved
+		applyCmd := core.CommandWithDefaultCI("kubectl", "apply", "-n", local.Namespace, "-f", manifestPath) //nolint:gosec // G204: namespace validated by validateKubeName above; manifestPath resolved via filepath.Abs; no shell involved
 		applyCmd.Stdout = os.Stdout
 		applyCmd.Stderr = os.Stderr
 		if err := applyCmd.Run(); err != nil {
@@ -294,7 +294,7 @@ func infraDown(args []string) error {
 			return fmt.Errorf("failed to resolve manifest path for %s: %w", res.Name, err)
 		}
 
-		deleteCmd := exec.Command("kubectl", "delete", "-n", local.Namespace, "-f", manifestPath, "--ignore-not-found=true") //nolint:gosec // G204: namespace validated by validateKubeName above; manifestPath resolved via filepath.Abs; no shell involved
+		deleteCmd := core.CommandWithDefaultCI("kubectl", "delete", "-n", local.Namespace, "-f", manifestPath, "--ignore-not-found=true") //nolint:gosec // G204: namespace validated by validateKubeName above; manifestPath resolved via filepath.Abs; no shell involved
 		deleteCmd.Stdout = os.Stdout
 		deleteCmd.Stderr = os.Stderr
 		if err := deleteCmd.Run(); err != nil {
@@ -396,7 +396,7 @@ func infraLogs(args []string) error {
 
 	// Tail logs
 	p.StepStart("infra", "Tailing logs for "+resourceName+"...")
-	logsCmd := exec.Command("kubectl", "logs", "-n", local.Namespace, "-l", resource.ReadyCheck.Selector, "-f", "--tail=50") //nolint:gosec // G204: namespace validated by validateKubeName above; selector is a label string from services.yaml; no shell involved
+	logsCmd := core.CommandWithDefaultCI("kubectl", "logs", "-n", local.Namespace, "-l", resource.ReadyCheck.Selector, "-f", "--tail=50") //nolint:gosec // G204: namespace validated by validateKubeName above; selector is a label string from services.yaml; no shell involved
 	logsCmd.Stdout = os.Stdout
 	logsCmd.Stderr = os.Stderr
 	logsCmd.Stdin = os.Stdin
@@ -409,7 +409,7 @@ func waitForReady(namespace, selector string, timeout time.Duration) error {
 	deadline := time.Now().Add(timeout)
 
 	for time.Now().Before(deadline) {
-		cmd := exec.Command("kubectl", "get", "pods", "-n", namespace, "-l", selector, "-o", "jsonpath={.items[*].status.conditions[?(@.type=='Ready')].status}")
+		cmd := core.CommandWithDefaultCI("kubectl", "get", "pods", "-n", namespace, "-l", selector, "-o", "jsonpath={.items[*].status.conditions[?(@.type=='Ready')].status}")
 		output, err := cmd.Output()
 		if err == nil {
 			statuses := strings.TrimSpace(string(output))
@@ -427,7 +427,7 @@ func waitForReady(namespace, selector string, timeout time.Duration) error {
 // startPortForward starts a kubectl port-forward in the background
 func startPortForward(namespace string, pf *PortForwardSpec) (int, error) {
 	portMapping := fmt.Sprintf("%d:%d", pf.LocalPort, pf.TargetPort)
-	cmd := exec.Command("kubectl", "port-forward", "-n", namespace, pf.Target, portMapping) //nolint:gosec // G204: namespace validated by validateKubeName at call sites; portMapping is fmt.Sprintf of integer ports; no shell involved
+	cmd := core.CommandWithDefaultCI("kubectl", "port-forward", "-n", namespace, pf.Target, portMapping) //nolint:gosec // G204: namespace validated by validateKubeName at call sites; portMapping is fmt.Sprintf of integer ports; no shell involved
 
 	// Redirect outputs to /dev/null to prevent the process from blocking
 	devNull, err := os.OpenFile(os.DevNull, os.O_WRONLY, 0)
@@ -472,7 +472,7 @@ func isProcessRunning(pid int) bool {
 
 // checkPodStatus returns the status of pods matching the selector
 func checkPodStatus(namespace, selector string) string {
-	cmd := exec.Command(
+	cmd := core.CommandWithDefaultCI(
 		"kubectl",
 		"--request-timeout="+kubeAPICheckTimeout,
 		"get",

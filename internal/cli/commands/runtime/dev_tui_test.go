@@ -670,6 +670,7 @@ func TestDevTUIHelperProcess(t *testing.T) {
 			}
 		}
 		values["cwd"], _ = os.Getwd()
+		values["CI"] = os.Getenv("CI")
 		data, err := json.Marshal(values)
 		if err != nil {
 			t.Fatal(err)

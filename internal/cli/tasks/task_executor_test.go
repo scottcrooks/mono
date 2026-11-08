@@ -71,13 +71,22 @@ func TestTaskExecutorHonorsDependencyOrdering(t *testing.T) {
 }
 
 func TestIntegrationTestReceivesTestEnvCascade(t *testing.T) {
+	priorCI, hadCI := os.LookupEnv("CI")
+	_ = os.Unsetenv("CI")
+	t.Cleanup(func() {
+		if hadCI {
+			_ = os.Setenv("CI", priorCI)
+		} else {
+			_ = os.Unsetenv("CI")
+		}
+	})
 	repo := t.TempDir()
 	withWorkingDir(t, repo)
 	serviceDir := filepath.Join(repo, "api")
 	mustWrite(t, filepath.Join(serviceDir, "go.mod"), "module api\n\ngo 1.24\n")
 	mustWrite(t, filepath.Join(repo, "test.env"), "CASCADE=root\nROOT_ONLY=shared\n")
-	mustWrite(t, filepath.Join(serviceDir, "test.env"), "CASCADE=service\nSERVICE_ONLY=yes\n")
-	writeExecutableFile(t, repo, filepath.Join("api", "observe.js"), "const fs=require('fs');fs.writeFileSync('observed.json',JSON.stringify({cascade:process.env.CASCADE,root:process.env.ROOT_ONLY,service:process.env.SERVICE_ONLY,ci:process.env.CI_OVERRIDE,dev:process.env.DEV_ONLY||null}));\n")
+	mustWrite(t, filepath.Join(serviceDir, "test.env"), "CASCADE=service\nSERVICE_ONLY=yes\nCI=false\n")
+	writeExecutableFile(t, repo, filepath.Join("api", "observe.js"), "const fs=require('fs');fs.writeFileSync('observed.json',JSON.stringify({cascade:process.env.CASCADE,root:process.env.ROOT_ONLY,service:process.env.SERVICE_ONLY,ci:process.env.CI,dev:process.env.DEV_ONLY||null}));\n")
 	t.Setenv("CI_OVERRIDE", "")
 	t.Setenv("DEV_ONLY", "inherited-only")
 	cfg := &Config{Services: []Service{{Name: "api", Path: "api", Kind: "service", Archetype: "go"}}}
@@ -97,7 +106,7 @@ func TestIntegrationTestReceivesTestEnvCascade(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := `{"cascade":"service","root":"shared","service":"yes","ci":"","dev":"inherited-only"}`
+	want := `{"cascade":"service","root":"shared","service":"yes","ci":"false","dev":"inherited-only"}`
 	if string(observed) != want {
 		t.Fatalf("child environment = %s, want %s", observed, want)
 	}

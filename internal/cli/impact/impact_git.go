@@ -2,7 +2,7 @@ package impact
 
 import (
 	"fmt"
-	"os/exec"
+	"github.com/scottcrooks/mono/internal/cli/core"
 	"strings"
 )
 
@@ -11,7 +11,7 @@ var gitOutput = gitOutputCmd
 const localDiffBaseRef = "local"
 
 func gitOutputCmd(args ...string) (string, error) {
-	cmd := exec.Command("git", args...)
+	cmd := core.CommandWithDefaultCI("git", args...)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return "", fmt.Errorf("git %s failed: %w (%s)", strings.Join(args, " "), err, strings.TrimSpace(string(out)))

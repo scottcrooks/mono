@@ -1,6 +1,7 @@
 package tasks
 
 import (
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -62,6 +63,44 @@ func TestBuildTaskCacheKeyChangesOnCommandChange(t *testing.T) {
 	}
 	if k1 == k2 {
 		t.Fatalf("expected cache key to change when command changes")
+	}
+}
+
+func TestBuildTaskCacheKeyUsesEffectiveDefaultCI(t *testing.T) {
+	repo := t.TempDir()
+	withWorkingDir(t, repo)
+	mustWrite(t, filepath.Join(repo, "apps/api/main.go"), "package main\n")
+	svc := Service{Name: "api", Path: "apps/api", Kind: "service", Archetype: "go"}
+	prior, present := os.LookupEnv("CI")
+	_ = os.Unsetenv("CI")
+	t.Cleanup(func() {
+		if present {
+			_ = os.Setenv("CI", prior)
+		} else {
+			_ = os.Unsetenv("CI")
+		}
+	})
+	defaultKey, err := buildTaskCacheKey(svc, TaskBuild, "go build ./...")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("CI", "true")
+	trueKey, err := buildTaskCacheKey(svc, TaskBuild, "go build ./...")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if defaultKey != trueKey {
+		t.Fatal("absent CI and explicit CI=true should share effective identity")
+	}
+	for _, value := range []string{"", "false"} {
+		t.Setenv("CI", value)
+		key, err := buildTaskCacheKey(svc, TaskBuild, "go build ./...")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if key == defaultKey {
+			t.Fatalf("explicit CI=%q should differ from default", value)
+		}
 	}
 }
 

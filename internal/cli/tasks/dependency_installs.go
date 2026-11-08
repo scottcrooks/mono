@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/scottcrooks/mono/internal/cli/core"
 	"github.com/scottcrooks/mono/internal/cli/output"
 	"gopkg.in/yaml.v3"
 )
@@ -366,6 +367,7 @@ func executeDependencyInstallCommand(ctx context.Context, target DependencyInsta
 		return err
 	}
 	cmd.Dir = absPath
+	cmd.Env = core.WithDefaultCI(cmd.Environ())
 	if stdoutWriter == nil {
 		stdoutWriter = os.Stdout
 	}

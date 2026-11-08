@@ -74,6 +74,7 @@ func RunCommand(svc Service, command string) error {
 	}
 
 	cmd.Dir = absPath
+	cmd.Env = WithDefaultCI(cmd.Environ())
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	cmd.Stdin = os.Stdin
