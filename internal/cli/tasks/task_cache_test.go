@@ -2,6 +2,7 @@ package tasks
 
 import (
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -61,6 +62,39 @@ func TestBuildTaskCacheKeyChangesOnCommandChange(t *testing.T) {
 	}
 	if k1 == k2 {
 		t.Fatalf("expected cache key to change when command changes")
+	}
+}
+
+func TestIntegrationTaskCacheKeyIncludesProfileAndEnvironment(t *testing.T) {
+	repo := t.TempDir()
+	withWorkingDir(t, repo)
+	mustWrite(t, filepath.Join(repo, "api", "main.go"), "package api\n")
+	svc := Service{Name: "api", Path: "api", Kind: "service", Archetype: "go"}
+	base, err := buildTaskCacheKey(svc, TaskTest, "go test ./...")
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := buildIntegrationTaskCacheKey(svc, TaskTest, "go test ./...", []string{"TOKEN=secret-value", "EMPTY="})
+	if err != nil {
+		t.Fatal(err)
+	}
+	stable, err := buildIntegrationTaskCacheKey(svc, TaskTest, "go test ./...", []string{"EMPTY=", "TOKEN=secret-value"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	changed, err := buildIntegrationTaskCacheKey(svc, TaskTest, "go test ./...", []string{"TOKEN=other-secret", "EMPTY="})
+	if err != nil {
+		t.Fatal(err)
+	}
+	emptyAbsent, err := buildIntegrationTaskCacheKey(svc, TaskTest, "go test ./...", []string{"TOKEN=secret-value"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first == base || first != stable || first == changed || first == emptyAbsent {
+		t.Fatalf("unexpected integration cache identities: base=%s first=%s stable=%s changed=%s emptyAbsent=%s", base, first, stable, changed, emptyAbsent)
+	}
+	if strings.Contains(first, "secret-value") || strings.Contains(first, "other-secret") {
+		t.Fatalf("cache key exposed environment value: %s", first)
 	}
 }
 

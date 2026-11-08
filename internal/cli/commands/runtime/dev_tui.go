@@ -14,6 +14,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/scottcrooks/mono/internal/cli/core"
 	"github.com/scottcrooks/mono/internal/cli/output"
 	"golang.org/x/term"
 )
@@ -339,7 +340,7 @@ func prepareDevChildren(background []Service, tui *Service, rt devTUIRuntime) ([
 			return nil, fmt.Errorf("[%s] %w", svc.Name, err)
 		}
 		cmd.Dir = absPath
-		cmd.Env, err = devEnvironment(rt.root, absPath, cmd.Environ())
+		cmd.Env, err = core.BuildEnvironment(rt.root, absPath, ".env", cmd.Environ())
 		if err != nil {
 			return nil, fmt.Errorf("[%s] %w", svc.Name, err)
 		}

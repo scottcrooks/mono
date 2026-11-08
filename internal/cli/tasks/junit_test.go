@@ -97,7 +97,7 @@ func TestFail(t *testing.T) { t.Error("failure detail") }
 	if !strings.Contains(cmd, "go test -json") || !strings.Contains(cmd, "-count=1") {
 		t.Fatalf("unexpected command: %s", cmd)
 	}
-	err := runTaskCommand(context.Background(), output.NewPrinterWithMode(&stdout, &stderr, output.ModePlain), svc, node, cmd, &stdout, &stderr, TaskRunOptions{JUnitDir: reports})
+	err := runTaskCommand(context.Background(), output.NewPrinterWithMode(&stdout, &stderr, output.ModePlain), svc, node, cmd, &stdout, &stderr, TaskRunOptions{JUnitDir: reports}, nil)
 	if err == nil {
 		t.Fatal("expected Go test failure")
 	}
@@ -148,7 +148,7 @@ func TestConcurrentGoTestReportsDoNotOverwrite(t *testing.T) {
 			node := TaskNode{Service: name, Task: TaskTest}
 			var out bytes.Buffer
 			cmd := commandForExecution(svc, node, "go test ./...", nil, TaskRunOptions{NoCache: true, JUnitDir: reports})
-			errCh <- runTaskCommand(context.Background(), output.NewPrinterWithMode(&out, &out, output.ModePlain), svc, node, cmd, &out, &out, TaskRunOptions{JUnitDir: reports})
+			errCh <- runTaskCommand(context.Background(), output.NewPrinterWithMode(&out, &out, output.ModePlain), svc, node, cmd, &out, &out, TaskRunOptions{JUnitDir: reports}, nil)
 		}()
 	}
 	wg.Wait()

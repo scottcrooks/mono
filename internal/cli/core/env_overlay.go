@@ -1,4 +1,4 @@
-package runtimecmd
+package core
 
 import (
 	"errors"
@@ -11,13 +11,13 @@ import (
 	"github.com/joho/godotenv"
 )
 
-// devEnvironment builds a child-only environment. Files are parsed independently
-// so variable references never expand against another file or the parent process.
-func devEnvironment(root, serviceDir string, inherited []string) ([]string, error) {
+// BuildEnvironment builds a child-only environment from root and service dotenv
+// files, followed by inherited entries. Each file is parsed independently.
+func BuildEnvironment(root, serviceDir, filename string, inherited []string) ([]string, error) {
 	values := make(map[string]string)
 	seen := make(map[string]bool)
 	for _, dir := range []string{root, serviceDir} {
-		path := filepath.Join(dir, ".env")
+		path := filepath.Join(dir, filename)
 		if seen[path] {
 			continue
 		}

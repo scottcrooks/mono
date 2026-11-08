@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/scottcrooks/mono/internal/cli/core"
 	"github.com/scottcrooks/mono/internal/cli/output"
 )
 
@@ -66,6 +67,139 @@ func TestTaskExecutorHonorsDependencyOrdering(t *testing.T) {
 	}
 	if byNode["api:build"] != TaskStatusSucceeded {
 		t.Fatalf("expected api success, got %s", byNode["api:build"])
+	}
+}
+
+func TestIntegrationTestReceivesTestEnvCascade(t *testing.T) {
+	repo := t.TempDir()
+	withWorkingDir(t, repo)
+	serviceDir := filepath.Join(repo, "api")
+	mustWrite(t, filepath.Join(serviceDir, "go.mod"), "module api\n\ngo 1.24\n")
+	mustWrite(t, filepath.Join(repo, "test.env"), "CASCADE=root\nROOT_ONLY=shared\n")
+	mustWrite(t, filepath.Join(serviceDir, "test.env"), "CASCADE=service\nSERVICE_ONLY=yes\n")
+	writeExecutableFile(t, repo, filepath.Join("api", "observe.js"), "const fs=require('fs');fs.writeFileSync('observed.json',JSON.stringify({cascade:process.env.CASCADE,root:process.env.ROOT_ONLY,service:process.env.SERVICE_ONLY,ci:process.env.CI_OVERRIDE,dev:process.env.DEV_ONLY||null}));\n")
+	t.Setenv("CI_OVERRIDE", "")
+	t.Setenv("DEV_ONLY", "inherited-only")
+	cfg := &Config{Services: []Service{{Name: "api", Path: "api", Kind: "service", Archetype: "go"}}}
+	prepared, err := PrepareTaskRun(cfg, TaskRequest{Task: TaskTest, Services: []string{"api"}, ExactServices: true, Integration: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	node := TaskNode{Service: "api", Task: TaskTest}
+	resolved := prepared.graph.nodes[node]
+	resolved.Command = "node observe.js"
+	prepared.graph.nodes[node] = resolved
+	results, err := RunPreparedTaskRun(prepared, TaskRunOptions{NoCache: true, Concurrency: 1})
+	if err != nil || len(results) != 1 || results[0].Status != TaskStatusSucceeded {
+		t.Fatalf("integration task failed: %+v, %v", results, err)
+	}
+	observed, err := os.ReadFile(filepath.Join(serviceDir, "observed.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := `{"cascade":"service","root":"shared","service":"yes","ci":"","dev":"inherited-only"}`
+	if string(observed) != want {
+		t.Fatalf("child environment = %s, want %s", observed, want)
+	}
+	if got := os.Getenv("CASCADE"); got != "" {
+		t.Fatalf("mono process environment was mutated: CASCADE=%q", got)
+	}
+}
+
+func TestIntegrationEnvironmentErrorPrecedesCacheAndLaunch(t *testing.T) {
+	repo := t.TempDir()
+	withWorkingDir(t, repo)
+	serviceDir := filepath.Join(repo, "api")
+	mustWrite(t, filepath.Join(serviceDir, "go.mod"), "module api\n\ngo 1.24\n")
+	secret := "do-not-print-this-value"
+	mustWrite(t, filepath.Join(serviceDir, "test.env"), "BAD!KEY="+secret+"\n")
+	writeExecutableFile(t, repo, filepath.Join("api", "marker.js"), "require('fs').writeFileSync('launched', 'yes')\n")
+	cfg := &Config{Services: []Service{{Name: "api", Path: "api", Kind: "service", Archetype: "go"}}}
+	prepared, err := PrepareTaskRun(cfg, TaskRequest{Task: TaskTest, Services: []string{"api"}, ExactServices: true, Integration: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	node := TaskNode{Service: "api", Task: TaskTest}
+	resolved := prepared.graph.nodes[node]
+	resolved.Command = "node marker.js"
+	prepared.graph.nodes[node] = resolved
+	childEnv, err := core.BuildEnvironment(repo, serviceDir, "test.env", os.Environ())
+	if err == nil {
+		t.Fatal("expected malformed environment file")
+	}
+	cacheKey, err := buildIntegrationTaskCacheKey(resolved.Service, node.Task, resolved.Command, childEnv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := newTaskCache().store(taskCacheEntry{Key: cacheKey, Service: "api", Task: TaskTest}); err != nil {
+		t.Fatal(err)
+	}
+	_, runErr := RunPreparedTaskRun(prepared, TaskRunOptions{Concurrency: 1})
+	if runErr == nil || strings.Contains(runErr.Error(), secret) {
+		t.Fatalf("expected secret-free env construction failure, got %v", runErr)
+	}
+	if _, err := os.Stat(filepath.Join(serviceDir, "launched")); !os.IsNotExist(err) {
+		t.Fatalf("test child launched despite environment error: %v", err)
+	}
+}
+
+func TestIntegrationExecutorCacheTracksEffectiveEnvironment(t *testing.T) {
+	repo := t.TempDir()
+	withWorkingDir(t, repo)
+	serviceDir := filepath.Join(repo, "api")
+	mustWrite(t, filepath.Join(serviceDir, "go.mod"), "module api\n\ngo 1.24\n")
+	countPath := filepath.Join(repo, "runs")
+	t.Setenv("INTEGRATION_SWITCH", "first")
+	t.Setenv("INTEGRATION_RUNS", countPath)
+	writeExecutableFile(t, repo, filepath.Join("api", "count.js"), "const fs=require('fs');fs.appendFileSync(process.env.INTEGRATION_RUNS,process.env.INTEGRATION_SWITCH+'\\n');\n")
+	cfg := &Config{Services: []Service{{Name: "api", Path: "api", Kind: "service", Archetype: "go"}}}
+	prepared, err := PrepareTaskRun(cfg, TaskRequest{Task: TaskTest, Services: []string{"api"}, ExactServices: true, Integration: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	node := TaskNode{Service: "api", Task: TaskTest}
+	resolved := prepared.graph.nodes[node]
+	resolved.Command = "node count.js"
+	prepared.graph.nodes[node] = resolved
+	run := func(wantStatus TaskRunStatus) {
+		t.Helper()
+		results, err := RunPreparedTaskRun(prepared, TaskRunOptions{Concurrency: 1})
+		if err != nil || len(results) != 1 || results[0].Status != wantStatus {
+			t.Fatalf("integration run = %+v, %v; want %s", results, err, wantStatus)
+		}
+	}
+	run(TaskStatusSucceeded)
+	run(TaskStatusSkipped)
+	t.Setenv("INTEGRATION_SWITCH", "second")
+	run(TaskStatusSucceeded)
+	got, err := os.ReadFile(countPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "first\nsecond\n" {
+		t.Fatalf("cache executions = %q, want first and second effective environments", got)
+	}
+}
+
+func TestRegularTestDoesNotReadTestEnv(t *testing.T) {
+	repo := t.TempDir()
+	withWorkingDir(t, repo)
+	serviceDir := filepath.Join(repo, "api")
+	mustWrite(t, filepath.Join(serviceDir, "go.mod"), "module api\n\ngo 1.24\n")
+	mustWrite(t, filepath.Join(serviceDir, "test.env"), "BAD!KEY=malformed\n")
+	writeExecutableFile(t, repo, filepath.Join("api", "regular.js"), "require('fs').writeFileSync('ran', 'yes')\n")
+	cfg := &Config{Services: []Service{{Name: "api", Path: "api", Kind: "service", Archetype: "go"}}}
+	prepared, err := PrepareTaskRun(cfg, TaskRequest{Task: TaskTest, Services: []string{"api"}, ExactServices: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	node := TaskNode{Service: "api", Task: TaskTest}
+	resolved := prepared.graph.nodes[node]
+	resolved.Command = "node regular.js"
+	prepared.graph.nodes[node] = resolved
+	results, err := RunPreparedTaskRun(prepared, TaskRunOptions{NoCache: true, Concurrency: 1})
+	if err != nil || len(results) != 1 || results[0].Status != TaskStatusSucceeded {
+		t.Fatalf("regular test read integration dotenv: %+v, %v", results, err)
 	}
 }
 

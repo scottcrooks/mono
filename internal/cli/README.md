@@ -100,3 +100,26 @@ printing source values. TUI preparation checks all children before starting any;
 streaming services start independently, so another service may already be running.
 Files are read during each child's preparation; there is no atomic snapshot across
 services. Restart `mono dev` to pick up edits; files are not watched or reloaded.
+
+## Integration test environment files
+
+Run integration tests explicitly with `mono test --integration [service ...]`.
+This is a separate task invocation; `mono check` does not add integration tests.
+Integration test children read `test.env` from the invocation directory (the
+directory where `mono` is run) and the selected service directory. The service
+file overrides the invocation file, and the environment inherited by `mono`
+overrides both, including explicitly empty values. These files are parsed
+independently with godotenv, so references expand only within their own file and
+shell command substitutions remain literal. Missing files are optional.
+
+The overlay applies only to runnable integration test children. It does not read
+development `.env` files, affect ordinary tests or other tasks, or configure
+dependency installs. It never changes mono's own environment. A read or parse
+error fails the affected service before cache lookup or launch and identifies
+the file without exposing parsed values.
+
+Integration test cache identity includes the integration profile and a digest
+of the complete effective child environment. Environment values are not stored
+in cache metadata. Existing source hashing can also invalidate a result when a
+file changes. Cache identity does not track external services or other external
+state; pass `--no-cache` to force the integration test to run.

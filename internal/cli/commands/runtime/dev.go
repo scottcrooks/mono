@@ -13,6 +13,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/scottcrooks/mono/internal/cli/core"
 	"github.com/scottcrooks/mono/internal/cli/output"
 )
 
@@ -251,7 +252,7 @@ func runServiceDev(ctx context.Context, svc Service, sink *lokiSink) error {
 		return fmt.Errorf("[%s] %w", svc.Name, err)
 	}
 	cmd.Dir = absPath
-	cmd.Env, err = devEnvironment(root, absPath, cmd.Environ())
+	cmd.Env, err = core.BuildEnvironment(root, absPath, ".env", cmd.Environ())
 	if err != nil {
 		return err
 	}

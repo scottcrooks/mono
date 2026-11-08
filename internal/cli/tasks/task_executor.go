@@ -16,6 +16,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/scottcrooks/mono/internal/cli/core"
 	"github.com/scottcrooks/mono/internal/cli/output"
 )
 
@@ -31,6 +32,7 @@ type taskExecutor struct {
 type readyTask struct {
 	resolved ResolvedTaskNode
 	cacheKey string
+	env      []string
 }
 
 func newTaskExecutor() taskExecutor {
@@ -149,10 +151,31 @@ func (e taskExecutor) execute(ctx context.Context, graph *taskGraph, opts TaskRu
 		for _, resolved := range ready {
 			node := resolved.Node
 			cmdString := commandForExecution(resolved.Service, node, resolved.Command, resolved.AffectedFiles, opts)
+			var childEnv []string
+			if opts.Integration && node.Task == TaskTest {
+				root, err := os.Getwd()
+				if err == nil {
+					var serviceDir string
+					serviceDir, err = filepath.Abs(resolved.Service.Path)
+					if err == nil {
+						childEnv, err = core.BuildEnvironment(root, serviceDir, "test.env", os.Environ())
+					}
+				}
+				if err != nil {
+					preBatch = append(preBatch, TaskRunResult{Node: node, Status: TaskStatusFailed, Err: fmt.Errorf("[%s] integration environment: %w", node, err)})
+					preFailed = true
+					delete(remaining, node)
+					continue
+				}
+			}
 			baseKey := ""
 			if taskUsesCache(node.Task) {
 				var err error
-				baseKey, err = buildTaskCacheKey(resolved.Service, node.Task, cmdString)
+				if opts.Integration && node.Task == TaskTest {
+					baseKey, err = buildIntegrationTaskCacheKey(resolved.Service, node.Task, cmdString, childEnv)
+				} else {
+					baseKey, err = buildTaskCacheKey(resolved.Service, node.Task, cmdString)
+				}
 				if err != nil {
 					preBatch = append(preBatch, TaskRunResult{Node: node, Status: TaskStatusFailed, Err: err})
 					preFailed = true
@@ -171,6 +194,7 @@ func (e taskExecutor) execute(ctx context.Context, graph *taskGraph, opts TaskRu
 			readyTasks = append(readyTasks, readyTask{
 				resolved: resolved,
 				cacheKey: composeExecutionCacheKey(baseKey, depKeys),
+				env:      childEnv,
 			})
 		}
 
@@ -284,7 +308,7 @@ func (e taskExecutor) runNode(ctx context.Context, task readyTask, opts TaskRunO
 		}
 	}
 
-	if err := runTaskCommand(ctx, printer, task.resolved.Service, node, cmdString, stdoutWriter, stderrWriter, opts); err != nil {
+	if err := runTaskCommand(ctx, printer, task.resolved.Service, node, cmdString, stdoutWriter, stderrWriter, opts, task.env); err != nil {
 		e.replayTaskTranscript(stdoutCapture, stderrCapture, opts.Progress)
 		return TaskRunResult{Node: node, Status: TaskStatusFailed, Err: err}
 	}
@@ -391,7 +415,7 @@ func composeExecutionCacheKey(baseKey string, dependencyKeys []string) string {
 	return hex.EncodeToString(h.Sum(nil))
 }
 
-func runTaskCommand(ctx context.Context, printer output.Printer, svc Service, node TaskNode, cmdString string, stdoutWriter, stderrWriter io.Writer, opts TaskRunOptions) error {
+func runTaskCommand(ctx context.Context, printer output.Printer, svc Service, node TaskNode, cmdString string, stdoutWriter, stderrWriter io.Writer, opts TaskRunOptions, childEnv []string) error {
 	printer.StepStart(node.String(), "start")
 	absPath, err := filepath.Abs(svc.Path)
 	if err != nil {
@@ -404,6 +428,9 @@ func runTaskCommand(ctx context.Context, printer output.Printer, svc Service, no
 		return fmt.Errorf("[%s] %w", node, err)
 	}
 	cmd.Dir = absPath
+	if childEnv != nil {
+		cmd.Env = childEnv
+	}
 	if stdoutWriter == nil {
 		stdoutWriter = os.Stdout
 	}

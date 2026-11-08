@@ -2,6 +2,7 @@ package tasks
 
 import (
 	"crypto/sha256"
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -97,6 +98,34 @@ func buildTaskCacheKey(svc Service, task TaskName, command string) (string, erro
 		}
 	}
 
+	return hex.EncodeToString(h.Sum(nil)), nil
+}
+
+func buildIntegrationTaskCacheKey(svc Service, task TaskName, command string, environment []string) (string, error) {
+	base, err := buildTaskCacheKey(svc, task, command)
+	if err != nil {
+		return "", err
+	}
+	entries := append([]string(nil), environment...)
+	sort.Strings(entries)
+	envHash := sha256.New()
+	var length [8]byte
+	for _, entry := range entries {
+		key, value, ok := strings.Cut(entry, "=")
+		if !ok {
+			continue
+		}
+		binary.BigEndian.PutUint64(length[:], uint64(len(key)))
+		_, _ = envHash.Write(length[:])
+		_, _ = io.WriteString(envHash, key)
+		binary.BigEndian.PutUint64(length[:], uint64(len(value)))
+		_, _ = envHash.Write(length[:])
+		_, _ = io.WriteString(envHash, value)
+	}
+	h := sha256.New()
+	_, _ = io.WriteString(h, base)
+	_, _ = io.WriteString(h, "\nintegration-test-env-v1\n")
+	_, _ = io.WriteString(h, hex.EncodeToString(envHash.Sum(nil)))
 	return hex.EncodeToString(h.Sum(nil)), nil
 }
 

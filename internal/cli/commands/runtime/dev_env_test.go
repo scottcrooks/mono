@@ -7,6 +7,8 @@ import (
 	"strings"
 	"sync"
 	"testing"
+
+	"github.com/scottcrooks/mono/internal/cli/core"
 )
 
 func writeDevEnv(t *testing.T, dir, contents string) {
@@ -43,7 +45,7 @@ func TestDevEnvironmentLayers(t *testing.T) {
 				writeDevEnv(t, service, tt.service)
 			}
 			before := append([]string(nil), tt.inherited...)
-			got, err := devEnvironment(root, service, tt.inherited)
+			got, err := core.BuildEnvironment(root, service, ".env", tt.inherited)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -61,7 +63,7 @@ func TestDevEnvironmentRootIsService(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
 	writeDevEnv(t, root, "A=one\nA=${A}two")
-	got, err := devEnvironment(root, filepath.Join(root, "unused", ".."), nil)
+	got, err := core.BuildEnvironment(root, filepath.Join(root, "unused", ".."), ".env", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -85,7 +87,7 @@ func TestDevEnvironmentIsolation(t *testing.T) {
 		for _, service := range []struct{ dir, name string }{{a, "a"}, {b, "b"}} {
 			wg.Go(func() {
 				inherited := []string{"EXPLICIT=marker"}
-				got, err := devEnvironment(root, service.dir, inherited)
+				got, err := core.BuildEnvironment(root, service.dir, ".env", inherited)
 				if err != nil {
 					t.Error(err)
 					return
@@ -135,7 +137,7 @@ func TestDevEnvironmentErrors(t *testing.T) {
 				} else {
 					writeDevEnv(t, dir, "BAD!KEY="+secret)
 				}
-				got, err := devEnvironment(root, service, nil)
+				got, err := core.BuildEnvironment(root, service, ".env", nil)
 				if err == nil {
 					t.Fatal("expected error")
 				}
