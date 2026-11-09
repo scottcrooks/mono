@@ -9,26 +9,33 @@ import (
 
 // Config represents the services.yaml structure.
 type Config struct {
-	Services  []Service  `yaml:"services"`
-	Local     *InfraSpec `yaml:"local"`
-	Telemetry bool       `yaml:"telemetry"`
+	Services    []Service        `yaml:"services"`
+	Local       *InfraSpec       `yaml:"local"`
+	Telemetry   bool             `yaml:"telemetry"`
+	Integration *IntegrationSpec `yaml:"integration"`
+}
+
+// IntegrationSpec contains optional repository-wide integration-test policy.
+type IntegrationSpec struct {
+	RequireFocus bool `yaml:"requireFocus"`
 }
 
 // Service represents a single service configuration.
 type Service struct {
-	Name        string            `yaml:"name"`
-	Path        string            `yaml:"path"`
-	Description string            `yaml:"description"`
-	Kind        string            `yaml:"kind"`
-	Type        string            `yaml:"type"`
-	Archetype   string            `yaml:"archetype"`
-	Runtime     string            `yaml:"runtime"`
-	Owner       string            `yaml:"owner"`
-	Depends     []string          `yaml:"depends"`
-	DevDepends  []string          `yaml:"devDepends"`
-	Dev         string            `yaml:"dev"`
-	Commands    map[string]string `yaml:"commands"`
-	Deploy      *DeploySpec       `yaml:"deploy"`
+	Name                 string            `yaml:"name"`
+	Path                 string            `yaml:"path"`
+	Description          string            `yaml:"description"`
+	Kind                 string            `yaml:"kind"`
+	Type                 string            `yaml:"type"`
+	Archetype            string            `yaml:"archetype"`
+	Runtime              string            `yaml:"runtime"`
+	Owner                string            `yaml:"owner"`
+	Depends              []string          `yaml:"depends"`
+	DevDepends           []string          `yaml:"devDepends"`
+	Dev                  string            `yaml:"dev"`
+	Commands             map[string]string `yaml:"commands"`
+	IntegrationPreflight string            `yaml:"integrationPreflight"`
+	Deploy               *DeploySpec       `yaml:"deploy"`
 }
 
 // DeploySpec defines minimal deploy contract settings for a service.

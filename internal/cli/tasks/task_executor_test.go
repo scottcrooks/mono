@@ -30,6 +30,196 @@ func TestBuildTaskGraphDetectsCycle(t *testing.T) {
 	}
 }
 
+func TestFocusedSelectionListsQualifiedTopLevelTestsWithoutRunningThem(t *testing.T) {
+	repo := t.TempDir()
+	withWorkingDir(t, repo)
+	service := filepath.Join(repo, "svc")
+	mustWrite(t, filepath.Join(service, "go.mod"), "module example.test/svc\n\ngo 1.24\n")
+	mustWrite(t, filepath.Join(service, "a", "a.go"), "package a\n")
+	mustWrite(t, filepath.Join(service, "a", "a_test.go"), "package a\nimport (\"os\";\"testing\")\nfunc TestShared(t *testing.T){_ = os.WriteFile(\"ran.marker\", []byte(\"yes\"), 0600)}\nfunc TestAlpha(t *testing.T){}\nfunc TestShared_Subtest(t *testing.T){}\n")
+	mustWrite(t, filepath.Join(service, "b", "b.go"), "package b\n")
+	mustWrite(t, filepath.Join(service, "b", "b_test.go"), "package b\nimport \"testing\"\nfunc TestShared(t *testing.T){}\nfunc TestBeta(t *testing.T){}\n")
+	cfg := &Config{Services: []Service{{Name: "svc", Path: "svc", Kind: "service", Archetype: "go"}}}
+	prepared, err := PrepareTaskRun(cfg, TaskRequest{Task: TaskTest, Services: []string{"svc"}, ExactServices: true, Integration: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var output bytes.Buffer
+	old := os.Stdout
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.Stdout = w
+	err = resolveFocusedGoSelection(prepared.graph, TaskRunOptions{Integration: true, List: true})
+	_ = w.Close()
+	os.Stdout = old
+	_, _ = output.ReadFrom(r)
+	_ = r.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, expected := range []string{"example.test/svc/a TestAlpha", "example.test/svc/a TestShared", "example.test/svc/b TestBeta", "example.test/svc/b TestShared"} {
+		if !strings.Contains(output.String(), expected) {
+			t.Errorf("missing %q in %s", expected, output.String())
+		}
+	}
+	if strings.Contains(output.String(), "TestAlpha/dynamic") {
+		t.Fatalf("dynamic subtest should not be listed: %s", output.String())
+	}
+	if _, err := os.Stat(filepath.Join(service, "a", "ran.marker")); !os.IsNotExist(err) {
+		t.Fatalf("list-only discovery ran a test: %v", err)
+	}
+}
+
+func TestFocusedSelectionRejectsEmptyAndInvalidPackagesBeforeTests(t *testing.T) {
+	for _, pattern := range []string{"./missing/...", "[", "./..."} {
+		t.Run(pattern, func(t *testing.T) {
+			repo := t.TempDir()
+			withWorkingDir(t, repo)
+			service := filepath.Join(repo, "svc")
+			mustWrite(t, filepath.Join(service, "go.mod"), "module example.test/svc\n\ngo 1.24\n")
+			mustWrite(t, filepath.Join(service, "svc.go"), "package svc\n")
+			mustWrite(t, filepath.Join(service, "svc_test.go"), "package svc\nimport (\"os\";\"testing\")\nfunc TestMarker(t *testing.T){_ = os.WriteFile(\"marker\",[]byte(\"ran\"),0600)}\n")
+			if pattern == "./..." {
+				mustWrite(t, filepath.Join(service, "broken_test.go"), "package svc\nfunc TestBroken( {\n")
+			}
+			cfg := &Config{Services: []Service{{Name: "svc", Path: "svc", Kind: "service", Archetype: "go"}}}
+			prepared, err := PrepareTaskRun(cfg, TaskRequest{Task: TaskTest, Services: []string{"svc"}, ExactServices: true, Integration: true})
+			if err != nil {
+				t.Fatal(err)
+			}
+			err = resolveFocusedGoSelection(prepared.graph, TaskRunOptions{Integration: true, Packages: []string{pattern}})
+			if err == nil {
+				t.Fatal("expected selection error")
+			}
+			if _, statErr := os.Stat(filepath.Join(service, "marker")); !os.IsNotExist(statErr) {
+				t.Fatalf("selection failure ran tests: %v", statErr)
+			}
+		})
+	}
+}
+
+func TestFocusedDiscoveryHonorsCommandContextCancellation(t *testing.T) {
+	repo := t.TempDir()
+	withWorkingDir(t, repo)
+	dir := filepath.Join(repo, "svc")
+	mustWrite(t, filepath.Join(dir, "go.mod"), "module example.test/svc\n\ngo 1.24\n")
+	mustWrite(t, filepath.Join(dir, "svc_test.go"), "package svc\nimport (\"os\";\"testing\")\nfunc TestMarker(t *testing.T){_ = os.WriteFile(\"marker\",[]byte(\"ran\"),0600)}\n")
+	prepared, err := PrepareTaskRun(&Config{Services: []Service{{Name: "svc", Path: "svc", Kind: "service", Archetype: "go"}}}, TaskRequest{Task: TaskTest, Services: []string{"svc"}, ExactServices: true, Integration: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	err = resolveFocusedGoSelection(prepared.graph, TaskRunOptions{Integration: true, Packages: []string{"./..."}, Context: ctx})
+	if err == nil {
+		t.Fatal("expected discovery cancellation")
+	}
+	if _, err := os.Stat(filepath.Join(dir, "marker")); !os.IsNotExist(err) {
+		t.Fatalf("test ran after discovery cancellation: %v", err)
+	}
+}
+
+func TestFocusedSelectionAppliesToDependencyTestNodes(t *testing.T) {
+	repo := t.TempDir()
+	withWorkingDir(t, repo)
+	for name, testName := range map[string]string{"dep": "TestDifferent", "app": "TestSelected"} {
+		dir := filepath.Join(repo, name)
+		module := "example.test/" + name
+		mustWrite(t, filepath.Join(dir, "go.mod"), "module "+module+"\n\ngo 1.24\n")
+		pkgDir, pkgName := dir, name
+		if name == "app" {
+			pkgDir = filepath.Join(dir, "specific")
+			pkgName = "specific"
+		}
+		mustWrite(t, filepath.Join(pkgDir, "test_test.go"), "package "+pkgName+"\nimport \"testing\"\nfunc "+testName+"(t *testing.T){}\n")
+	}
+	cfg := &Config{Services: []Service{{Name: "dep", Path: "dep", Kind: "package", Archetype: "go"}, {Name: "app", Path: "app", Kind: "service", Archetype: "go", Depends: []string{"dep"}}}}
+	prepared, err := PrepareTaskRun(cfg, TaskRequest{Task: TaskTest, Services: []string{"app"}, Integration: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	opts := TaskRunOptions{Integration: true, Packages: []string{"./specific"}, Run: "^TestSelected$", Concurrency: 1}
+	err = resolveFocusedGoSelection(prepared.graph, opts)
+	if err != nil {
+		t.Fatalf("dependency with no match should be skipped: %v", err)
+	}
+	if got := prepared.graph.nodes[TaskNode{Service: "dep", Task: TaskTest}].SkipReason; !strings.HasPrefix(got, "no matching focused") {
+		t.Fatalf("dependency skip reason=%q", got)
+	}
+	if got := prepared.graph.nodes[TaskNode{Service: "app", Task: TaskTest}].SkipReason; got != "" {
+		t.Fatalf("requested service was skipped: %q", got)
+	}
+	results, err := RunPreparedTaskRun(prepared, opts)
+	if err != nil {
+		t.Fatalf("run focused service: %v", err)
+	}
+	statuses := map[string]TaskRunStatus{}
+	for _, result := range results {
+		statuses[result.Node.Service] = result.Status
+	}
+	if statuses["dep"] != TaskStatusSkipped || statuses["app"] != TaskStatusSucceeded {
+		t.Fatalf("unexpected dependency/app statuses: %v", statuses)
+	}
+}
+
+func TestFocusedSelectionRejectsWhenEveryNodeIsSkipped(t *testing.T) {
+	node := TaskNode{Service: "svc", Task: TaskTest}
+	graph := &taskGraph{nodes: map[TaskNode]ResolvedTaskNode{node: {Node: node, Service: Service{Name: "svc", Archetype: "go"}, SkipReason: "unsupported"}}}
+	err := resolveFocusedGoSelection(graph, TaskRunOptions{Integration: true, Packages: []string{"./..."}})
+	if err == nil || !strings.Contains(err.Error(), "no runnable Go nodes") {
+		t.Fatalf("expected no-runnable-node error, got %v", err)
+	}
+}
+
+func TestFocusedSelectionExecutesOnlyResolvedPackageAndRun(t *testing.T) {
+	repo := t.TempDir()
+	withWorkingDir(t, repo)
+	service := filepath.Join(repo, "svc")
+	mustWrite(t, filepath.Join(service, "go.mod"), "module example.test/svc\n\ngo 1.24\n")
+	mustWrite(t, filepath.Join(service, "a", "a_test.go"), "package a\nimport (\"os\";\"testing\")\nfunc TestChosen(t *testing.T){}\nfunc TestOther(t *testing.T){_ = os.WriteFile(\"unexpected.marker\",[]byte(\"ran\"),0600)}\n")
+	mustWrite(t, filepath.Join(service, "b", "b_test.go"), "package b\nimport (\"os\";\"testing\")\nfunc TestChosen(t *testing.T){_ = os.WriteFile(\"wrong-package.marker\",[]byte(\"ran\"),0600)}\n")
+	cfg := &Config{Services: []Service{{Name: "svc", Path: "svc", Kind: "service", Archetype: "go"}}}
+	prepared, err := PrepareTaskRun(cfg, TaskRequest{Task: TaskTest, Services: []string{"svc"}, ExactServices: true, Integration: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	focusOpts := TaskRunOptions{Integration: true, Packages: []string{"./a"}, Run: "^TestChosen$", GoConcurrency: 2}
+	if err := resolveFocusedGoSelection(prepared.graph, focusOpts); err != nil {
+		t.Fatal(err)
+	}
+	focusOpts.Concurrency = 1
+	if _, err := RunPreparedTaskRun(prepared, focusOpts); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"unexpected.marker", "wrong-package.marker"} {
+		if _, err := os.Stat(filepath.Join(service, name)); !os.IsNotExist(err) {
+			t.Fatalf("unselected test ran (%s): %v", name, err)
+		}
+	}
+}
+
+func TestIntegrationFocusPolicyPrecedesServiceResolution(t *testing.T) {
+	cfg := &Config{Integration: &core.IntegrationSpec{RequireFocus: true}}
+	req := TaskRequest{Task: TaskTest, Services: []string{"unknown"}, ExactServices: true, Integration: true}
+	_, err := RunOrchestratedTaskRequestWithConfig(cfg, req, TaskRunOptions{Integration: true})
+	if err == nil || !strings.Contains(err.Error(), "requires --package, --run, or explicit --full-suite") {
+		t.Fatalf("expected policy rejection before service resolution, got %v", err)
+	}
+	for _, opts := range []TaskRunOptions{{Integration: true, Packages: []string{"./..."}}, {Integration: true, FullSuite: true}} {
+		_, err = RunOrchestratedTaskRequestWithConfig(cfg, req, opts)
+		if err == nil || strings.Contains(err.Error(), "integration policy") {
+			t.Fatalf("explicit intent should pass policy, got %v", err)
+		}
+	}
+	legacy := &Config{}
+	_, err = RunOrchestratedTaskRequestWithConfig(legacy, req, TaskRunOptions{Integration: true})
+	if err == nil || strings.Contains(err.Error(), "integration policy") {
+		t.Fatalf("legacy config should bypass policy, got %v", err)
+	}
+}
+
 func TestTaskExecutorHonorsDependencyOrdering(t *testing.T) {
 	repo := t.TempDir()
 	withWorkingDir(t, repo)
@@ -87,9 +277,10 @@ func TestIntegrationTestReceivesTestEnvCascade(t *testing.T) {
 	mustWrite(t, filepath.Join(repo, "test.env"), "CASCADE=root\nROOT_ONLY=shared\n")
 	mustWrite(t, filepath.Join(serviceDir, "test.env"), "CASCADE=service\nSERVICE_ONLY=yes\nCI=false\n")
 	writeExecutableFile(t, repo, filepath.Join("api", "observe.js"), "const fs=require('fs');fs.writeFileSync('observed.json',JSON.stringify({cascade:process.env.CASCADE,root:process.env.ROOT_ONLY,service:process.env.SERVICE_ONLY,ci:process.env.CI,dev:process.env.DEV_ONLY||null}));\n")
+	writeExecutableFile(t, repo, filepath.Join("api", "preflight.js"), "const fs=require('fs');fs.writeFileSync('preflight.json',JSON.stringify({cascade:process.env.CASCADE,root:process.env.ROOT_ONLY,service:process.env.SERVICE_ONLY,ci:process.env.CI,dev:process.env.DEV_ONLY||null}));\n")
 	t.Setenv("CI_OVERRIDE", "")
 	t.Setenv("DEV_ONLY", "inherited-only")
-	cfg := &Config{Services: []Service{{Name: "api", Path: "api", Kind: "service", Archetype: "go"}}}
+	cfg := &Config{Services: []Service{{Name: "api", Path: "api", Kind: "service", Archetype: "go", IntegrationPreflight: "node preflight.js"}}}
 	prepared, err := PrepareTaskRun(cfg, TaskRequest{Task: TaskTest, Services: []string{"api"}, ExactServices: true, Integration: true})
 	if err != nil {
 		t.Fatal(err)
@@ -110,8 +301,136 @@ func TestIntegrationTestReceivesTestEnvCascade(t *testing.T) {
 	if string(observed) != want {
 		t.Fatalf("child environment = %s, want %s", observed, want)
 	}
+	preflightObserved, err := os.ReadFile(filepath.Join(serviceDir, "preflight.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(preflightObserved) != want {
+		t.Fatalf("preflight environment=%s, want same test snapshot %s", preflightObserved, want)
+	}
 	if got := os.Getenv("CASCADE"); got != "" {
 		t.Fatalf("mono process environment was mutated: CASCADE=%q", got)
+	}
+}
+
+func TestIntegrationPreflightRunsOnCacheHitWithSameEnvironment(t *testing.T) {
+	repo := t.TempDir()
+	withWorkingDir(t, repo)
+	dir := filepath.Join(repo, "svc")
+	mustWrite(t, filepath.Join(dir, "test.env"), "PREFLIGHT_VALUE=service-value\n")
+	writeExecutableFile(t, repo, filepath.Join("svc", "preflight.js"), "const fs=require('fs');fs.writeFileSync('preflight.marker',process.env.PREFLIGHT_VALUE||'missing')\n")
+	writeExecutableFile(t, repo, filepath.Join("svc", "test.js"), "require('fs').writeFileSync('test.marker','ran')\n")
+	svc := Service{Name: "svc", Path: "svc", Kind: "service", Archetype: "go", IntegrationPreflight: "node preflight.js"}
+	cfg := &Config{Services: []Service{svc}}
+	prepared, err := PrepareTaskRun(cfg, TaskRequest{Task: TaskTest, Services: []string{"svc"}, ExactServices: true, Integration: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	env, err := core.BuildEnvironment(repo, dir, "test.env", os.Environ())
+	if err != nil {
+		t.Fatal(err)
+	}
+	env = core.WithDefaultCI(env)
+	key, err := buildIntegrationTaskCacheKey(svc, TaskTest, "node test.js\nintegration-preflight="+svc.IntegrationPreflight, env)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := newTaskCache().store(taskCacheEntry{Key: key, Service: "svc", Task: TaskTest}); err != nil {
+		t.Fatal(err)
+	}
+	node := TaskNode{Service: "svc", Task: TaskTest}
+	resolved := prepared.graph.nodes[node]
+	resolved.Command = "node test.js"
+	prepared.graph.nodes[node] = resolved
+	results, err := RunPreparedTaskRun(prepared, TaskRunOptions{Concurrency: 1})
+	if err != nil || len(results) != 1 || !results[0].Cached {
+		t.Fatalf("expected cache hit after preflight: results=%+v err=%v", results, err)
+	}
+	got, err := os.ReadFile(filepath.Join(dir, "preflight.marker"))
+	if err != nil || string(got) != "service-value" {
+		t.Fatalf("preflight env=%q err=%v", got, err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "test.marker")); !os.IsNotExist(err) {
+		t.Fatalf("cached test unexpectedly ran: %v", err)
+	}
+}
+
+func TestIntegrationPreflightFailurePreventsCachedTest(t *testing.T) {
+	repo := t.TempDir()
+	withWorkingDir(t, repo)
+	dir := filepath.Join(repo, "svc")
+	writeExecutableFile(t, repo, filepath.Join("svc", "preflight.js"), "process.exit(7)\n")
+	writeExecutableFile(t, repo, filepath.Join("svc", "test.js"), "require('fs').writeFileSync('test.marker','ran')\n")
+	svc := Service{Name: "svc", Path: "svc", Kind: "service", Archetype: "go", IntegrationPreflight: "node preflight.js"}
+	cfg := &Config{Services: []Service{svc}}
+	prepared, err := PrepareTaskRun(cfg, TaskRequest{Task: TaskTest, Services: []string{"svc"}, ExactServices: true, Integration: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	env, err := core.BuildEnvironment(repo, dir, "test.env", os.Environ())
+	if err != nil {
+		t.Fatal(err)
+	}
+	env = core.WithDefaultCI(env)
+	key, err := buildIntegrationTaskCacheKey(svc, TaskTest, "node test.js\nintegration-preflight="+svc.IntegrationPreflight, env)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := newTaskCache().store(taskCacheEntry{Key: key, Service: "svc", Task: TaskTest}); err != nil {
+		t.Fatal(err)
+	}
+	node := TaskNode{Service: "svc", Task: TaskTest}
+	resolved := prepared.graph.nodes[node]
+	resolved.Command = "node test.js"
+	prepared.graph.nodes[node] = resolved
+	results, err := RunPreparedTaskRun(prepared, TaskRunOptions{Concurrency: 1})
+	if err == nil || len(results) != 1 || results[0].Status != TaskStatusFailed {
+		t.Fatalf("expected preflight failure: results=%+v err=%v", results, err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "test.marker")); !os.IsNotExist(err) {
+		t.Fatalf("test ran after preflight failure: %v", err)
+	}
+}
+
+func TestIntegrationPreflightHonorsCommandContextCancellation(t *testing.T) {
+	repo := t.TempDir()
+	withWorkingDir(t, repo)
+	dir := filepath.Join(repo, "svc")
+	writeExecutableFile(t, repo, filepath.Join("svc", "preflight.js"), "require('fs').writeFileSync('preflight.marker','ran')\n")
+	writeExecutableFile(t, repo, filepath.Join("svc", "test.js"), "require('fs').writeFileSync('test.marker','ran')\n")
+	svc := Service{Name: "svc", Path: "svc", Kind: "service", Archetype: "go", IntegrationPreflight: "node preflight.js"}
+	prepared, err := PrepareTaskRun(&Config{Services: []Service{svc}}, TaskRequest{Task: TaskTest, Services: []string{"svc"}, ExactServices: true, Integration: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	node := TaskNode{Service: "svc", Task: TaskTest}
+	resolved := prepared.graph.nodes[node]
+	resolved.Command = "node test.js"
+	prepared.graph.nodes[node] = resolved
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err = newTaskExecutor().execute(ctx, prepared.graph, TaskRunOptions{Integration: true, Concurrency: 1})
+	if err == nil {
+		t.Fatal("expected cancelled preflight")
+	}
+	if _, err := os.Stat(filepath.Join(dir, "test.marker")); !os.IsNotExist(err) {
+		t.Fatalf("test ran after cancellation: %v", err)
+	}
+}
+
+func TestIntegrationTestCommandHonorsCommandContextCancellation(t *testing.T) {
+	repo := t.TempDir()
+	withWorkingDir(t, repo)
+	dir := filepath.Join(repo, "svc")
+	writeExecutableFile(t, repo, filepath.Join("svc", "slow.js"), "setTimeout(()=>require('fs').writeFileSync('test.marker','ran'),1500)\n")
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	err := runTaskCommand(ctx, output.DefaultPrinter(), Service{Name: "svc", Path: "svc", Archetype: "go"}, TaskNode{Service: "svc", Task: TaskTest}, "node slow.js", nil, nil, TaskRunOptions{Integration: true}, nil)
+	if err == nil {
+		t.Fatal("expected test command cancellation")
+	}
+	if _, err := os.Stat(filepath.Join(dir, "test.marker")); !os.IsNotExist(err) {
+		t.Fatalf("test continued after cancellation: %v", err)
 	}
 }
 

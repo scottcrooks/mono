@@ -46,3 +46,39 @@ func TestParseTaskInvocationArgsUnknownFlag(t *testing.T) {
 		t.Fatal("expected unknown flag error")
 	}
 }
+
+func TestParseTaskInvocationArgsFocusedIntegrationOptions(t *testing.T) {
+	services, opts, err := parseTaskInvocationArgs([]string{"--integration", "--package", "./internal/...", "--package=./cmd/...", "--run", "^TestStore$", "--list"}, 4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(services) != 0 || len(opts.Packages) != 2 || opts.Packages[0] != "./internal/..." || opts.Packages[1] != "./cmd/..." || opts.Run != "^TestStore$" || !opts.List {
+		t.Fatalf("unexpected parse: services=%v opts=%+v", services, opts)
+	}
+}
+
+func TestParseTaskInvocationArgsRejectsInvalidFocus(t *testing.T) {
+	for _, args := range [][]string{
+		{"--integration", "--package="},
+		{"--integration", "--run", "["},
+		{"--integration", "--run=x", "--run=y"},
+		{"--integration", "--full-suite", "--package", "./..."},
+		{"--package", "./..."},
+	} {
+		if _, _, err := parseTaskInvocationArgs(args, 4); err == nil {
+			t.Errorf("expected error for %v", args)
+		}
+	}
+}
+
+func TestParseTaskInvocationArgsGoConcurrency(t *testing.T) {
+	_, opts, err := parseTaskInvocationArgs([]string{"--integration", "--go-concurrency=3", "--concurrency", "2"}, 8)
+	if err != nil || opts.GoConcurrency != 3 || opts.Concurrency != 2 {
+		t.Fatalf("opts=%+v err=%v", opts, err)
+	}
+	for _, args := range [][]string{{"--integration", "--go-concurrency", "0"}, {"--integration", "--go-concurrency=x"}, {"--integration", "--go-concurrency=2", "--go-concurrency=3"}, {"--go-concurrency=2"}} {
+		if _, _, err := parseTaskInvocationArgs(args, 4); err == nil {
+			t.Errorf("expected error for %v", args)
+		}
+	}
+}

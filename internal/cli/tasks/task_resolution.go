@@ -19,6 +19,8 @@ type ResolvedTaskNode struct {
 	Node          TaskNode
 	Service       Service
 	Command       string
+	CommandArgs   []string
+	Environment   []string
 	AffectedFiles []string
 	SkipReason    string
 }

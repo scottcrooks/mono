@@ -9,11 +9,13 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"runtime"
 	"sort"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/scottcrooks/mono/internal/cli/core"
@@ -71,12 +73,23 @@ func RunOrchestratedTask(command string, args []string) error {
 	if err != nil {
 		return fmt.Errorf("loading config: %w", err)
 	}
+	if err := validateIntegrationFocusPolicy(cfg, opts); err != nil {
+		return err
+	}
+	if opts.Integration && opts.Context == nil {
+		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+		defer stop()
+		opts.Context = ctx
+	}
 
 	targetServices, exactServices, err := resolveTaskTargetServices(cfg, task, serviceArgs, opts)
 	if err != nil {
 		return err
 	}
 	if len(targetServices) == 0 {
+		if opts.Integration && (len(opts.Packages) > 0 || opts.Run != "" || opts.List) {
+			return fmt.Errorf("focused integration selection has no runnable Go services")
+		}
 		printNoTaskTargets(task, opts.All)
 		return nil
 	}
@@ -87,6 +100,9 @@ func RunOrchestratedTask(command string, args []string) error {
 		ExactServices: exactServices,
 		Integration:   opts.Integration,
 	}, opts)
+	if opts.List {
+		return err
+	}
 	PrintTaskSummary(results)
 	if err != nil {
 		return err
@@ -95,6 +111,12 @@ func RunOrchestratedTask(command string, args []string) error {
 }
 
 func RunOrchestratedTaskRequestWithConfig(cfg *Config, req TaskRequest, opts TaskRunOptions) ([]TaskRunResult, error) {
+	if req.Integration {
+		opts.Integration = true
+	}
+	if err := validateIntegrationFocusPolicy(cfg, opts); err != nil {
+		return nil, err
+	}
 	if opts.PreparedRun != nil {
 		return RunPreparedTaskRun(opts.PreparedRun, opts)
 	}
@@ -102,7 +124,30 @@ func RunOrchestratedTaskRequestWithConfig(cfg *Config, req TaskRequest, opts Tas
 	if err != nil {
 		return nil, err
 	}
+	if err := configureGoConcurrency(prepared.graph, opts); err != nil {
+		return nil, err
+	}
+	if opts.Integration && (len(opts.Packages) > 0 || opts.Run != "" || opts.List) {
+		if err := resolveFocusedGoSelection(prepared.graph, opts); err != nil {
+			return nil, err
+		}
+		if opts.List {
+			for node, resolved := range prepared.graph.nodes {
+				if resolved.SkipReason != "" {
+					fmt.Printf("[%s] skipped: %s\n", node, resolved.SkipReason)
+				}
+			}
+			return nil, nil
+		}
+	}
 	return RunPreparedTaskRun(prepared, opts)
+}
+
+func validateIntegrationFocusPolicy(cfg *Config, opts TaskRunOptions) error {
+	if opts.Integration && cfg != nil && cfg.Integration != nil && cfg.Integration.RequireFocus && len(opts.Packages) == 0 && opts.Run == "" && !opts.FullSuite {
+		return fmt.Errorf("integration policy requires --package, --run, or explicit --full-suite")
+	}
+	return nil
 }
 
 func (e taskExecutor) execute(ctx context.Context, graph *taskGraph, opts TaskRunOptions) ([]TaskRunResult, error) {
@@ -153,29 +198,34 @@ func (e taskExecutor) execute(ctx context.Context, graph *taskGraph, opts TaskRu
 			cmdString := commandForExecution(resolved.Service, node, resolved.Command, resolved.AffectedFiles, opts)
 			var childEnv []string
 			if opts.Integration && node.Task == TaskTest {
-				root, err := os.Getwd()
-				if err == nil {
-					var serviceDir string
-					serviceDir, err = filepath.Abs(resolved.Service.Path)
+				if len(resolved.Environment) > 0 {
+					childEnv = append([]string(nil), resolved.Environment...)
+				} else {
+					root, err := os.Getwd()
 					if err == nil {
-						childEnv, err = core.BuildEnvironment(root, serviceDir, "test.env", os.Environ())
+						var serviceDir string
+						serviceDir, err = filepath.Abs(resolved.Service.Path)
 						if err == nil {
-							childEnv = core.WithDefaultCI(childEnv)
+							childEnv, err = core.BuildEnvironment(root, serviceDir, "test.env", os.Environ())
+							if err == nil {
+								childEnv = core.WithDefaultCI(childEnv)
+							}
 						}
 					}
-				}
-				if err != nil {
-					preBatch = append(preBatch, TaskRunResult{Node: node, Status: TaskStatusFailed, Err: fmt.Errorf("[%s] integration environment: %w", node, err)})
-					preFailed = true
-					delete(remaining, node)
-					continue
+					if err != nil {
+						preBatch = append(preBatch, TaskRunResult{Node: node, Status: TaskStatusFailed, Err: fmt.Errorf("[%s] integration environment: %w", node, err)})
+						preFailed = true
+						delete(remaining, node)
+						continue
+					}
 				}
 			}
 			baseKey := ""
 			if taskUsesCache(node.Task) {
 				var err error
 				if opts.Integration && node.Task == TaskTest {
-					baseKey, err = buildIntegrationTaskCacheKey(resolved.Service, node.Task, cmdString, childEnv)
+					cacheCommand := cmdString + "\nintegration-preflight=" + resolved.Service.IntegrationPreflight
+					baseKey, err = buildIntegrationTaskCacheKey(resolved.Service, node.Task, cacheCommand, childEnv)
 				} else {
 					baseKey, err = buildTaskCacheKey(resolved.Service, node.Task, cmdString)
 				}
@@ -295,7 +345,13 @@ func (e taskExecutor) runNode(ctx context.Context, task readyTask, opts TaskRunO
 		stderrWriter = stderrCapture
 	}
 	cmdString := commandForExecution(task.resolved.Service, node, task.resolved.Command, task.resolved.AffectedFiles, opts)
-	usesCache := taskUsesCache(node.Task)
+	if opts.Integration && node.Task == TaskTest && strings.TrimSpace(task.resolved.Service.IntegrationPreflight) != "" {
+		if err := runIntegrationPreflight(ctx, task.resolved.Service, node, task.resolved.Service.IntegrationPreflight, task.env, printer); err != nil {
+			return TaskRunResult{Node: node, Status: TaskStatusFailed, Err: err}
+		}
+	}
+	focused := opts.Integration && (len(opts.Packages) > 0 || opts.Run != "")
+	usesCache := taskUsesCache(node.Task) && !focused
 	cacheKey := task.cacheKey
 	if usesCache {
 		entry, hit, err := e.cache.load(cacheKey)
@@ -311,7 +367,7 @@ func (e taskExecutor) runNode(ctx context.Context, task readyTask, opts TaskRunO
 		}
 	}
 
-	if err := runTaskCommand(ctx, printer, task.resolved.Service, node, cmdString, stdoutWriter, stderrWriter, opts, task.env); err != nil {
+	if err := runTaskCommandWithArgs(ctx, printer, task.resolved.Service, node, cmdString, task.resolved.CommandArgs, stdoutWriter, stderrWriter, opts, task.env); err != nil {
 		e.replayTaskTranscript(stdoutCapture, stderrCapture, opts.Progress)
 		return TaskRunResult{Node: node, Status: TaskStatusFailed, Err: err}
 	}
@@ -331,6 +387,29 @@ func (e taskExecutor) runNode(ctx context.Context, task readyTask, opts TaskRunO
 	}
 
 	return TaskRunResult{Node: node, Status: TaskStatusSucceeded}
+}
+
+func runIntegrationPreflight(ctx context.Context, svc Service, node TaskNode, command string, env []string, printer output.Printer) error {
+	parts := strings.Fields(command)
+	cmd, err := commandFromParts(ctx, parts)
+	if err != nil {
+		return fmt.Errorf("[%s] integration preflight: %w", node, err)
+	}
+	dir, err := filepath.Abs(svc.Path)
+	if err != nil {
+		return err
+	}
+	cmd.Dir = dir
+	cmd.Env = env
+	cmd.Stdout = output.NewPrefixWriter(fmt.Sprintf("[%s preflight]", node), os.Stdout)
+	cmd.Stderr = output.NewPrefixWriter(fmt.Sprintf("[%s preflight]", node), os.Stderr)
+	printer.StepStart(node.String(), "integration preflight")
+	if err := cmd.Run(); err != nil {
+		printer.StepErr(node.String(), "integration preflight failed")
+		return fmt.Errorf("[%s] integration preflight failed: %w", node, err)
+	}
+	printer.StepOK(node.String(), "integration preflight passed")
+	return nil
 }
 
 func (e taskExecutor) replayTaskTranscript(stdoutCapture, stderrCapture *bytes.Buffer, progress *TaskProgressSession) {
@@ -378,7 +457,8 @@ func commandForExecution(svc Service, node TaskNode, command string, affectedFil
 	if opts.JUnitDir != "" {
 		trimmed = strings.Replace(trimmed, "go test", "go test -json", 1)
 	}
-	if !opts.NoCache && opts.JUnitDir == "" {
+	focused := opts.Integration && (len(opts.Packages) > 0 || opts.Run != "")
+	if !opts.NoCache && !focused && opts.JUnitDir == "" {
 		return trimmed
 	}
 	if !strings.HasPrefix(trimmed, "go test") || strings.Contains(trimmed, "-count=") {
@@ -419,13 +499,17 @@ func composeExecutionCacheKey(baseKey string, dependencyKeys []string) string {
 }
 
 func runTaskCommand(ctx context.Context, printer output.Printer, svc Service, node TaskNode, cmdString string, stdoutWriter, stderrWriter io.Writer, opts TaskRunOptions, childEnv []string) error {
+	return runTaskCommandWithArgs(ctx, printer, svc, node, cmdString, nil, stdoutWriter, stderrWriter, opts, childEnv)
+}
+
+func runTaskCommandWithArgs(ctx context.Context, printer output.Printer, svc Service, node TaskNode, cmdString string, extraArgs []string, stdoutWriter, stderrWriter io.Writer, opts TaskRunOptions, childEnv []string) error {
 	printer.StepStart(node.String(), "start")
 	absPath, err := filepath.Abs(svc.Path)
 	if err != nil {
 		return err
 	}
 
-	parts := strings.Fields(cmdString)
+	parts := append(strings.Fields(cmdString), extraArgs...)
 	cmd, err := commandFromParts(ctx, parts)
 	if err != nil {
 		return fmt.Errorf("[%s] %w", node, err)

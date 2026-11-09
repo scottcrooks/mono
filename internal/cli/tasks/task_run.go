@@ -27,6 +27,15 @@ func PrepareTaskRun(cfg *Config, req TaskRequest) (*PreparedTaskRun, error) {
 	if err != nil {
 		return nil, err
 	}
+	if len(req.Services) == 0 && !req.ExactServices {
+		for _, node := range resolution.Nodes {
+			graph.directServices[node.Service.Name] = true
+		}
+	} else {
+		for _, name := range req.Services {
+			graph.directServices[name] = true
+		}
+	}
 	return &PreparedTaskRun{graph: graph, integration: req.Integration}, nil
 }
 
@@ -180,5 +189,9 @@ func RunPreparedTaskRun(prepared *PreparedTaskRun, opts TaskRunOptions) ([]TaskR
 	opts.progressIDs = session.ids[prepared]
 	opts.Integration = prepared.integration
 	executor := newTaskExecutor()
-	return executor.execute(context.Background(), prepared.graph, opts)
+	ctx := opts.Context
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return executor.execute(ctx, prepared.graph, opts)
 }

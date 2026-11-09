@@ -7,18 +7,20 @@ import (
 )
 
 type taskGraph struct {
-	nodes    map[TaskNode]ResolvedTaskNode
-	edges    map[TaskNode][]TaskNode
-	reverse  map[TaskNode][]TaskNode
-	inDegree map[TaskNode]int
+	nodes          map[TaskNode]ResolvedTaskNode
+	directServices map[string]bool
+	edges          map[TaskNode][]TaskNode
+	reverse        map[TaskNode][]TaskNode
+	inDegree       map[TaskNode]int
 }
 
 func buildTaskGraph(cfg *Config, resolved []ResolvedTaskNode) (*taskGraph, error) {
 	g := &taskGraph{
-		nodes:    make(map[TaskNode]ResolvedTaskNode, len(resolved)),
-		edges:    make(map[TaskNode][]TaskNode, len(resolved)),
-		reverse:  make(map[TaskNode][]TaskNode, len(resolved)),
-		inDegree: make(map[TaskNode]int, len(resolved)),
+		nodes:          make(map[TaskNode]ResolvedTaskNode, len(resolved)),
+		directServices: make(map[string]bool),
+		edges:          make(map[TaskNode][]TaskNode, len(resolved)),
+		reverse:        make(map[TaskNode][]TaskNode, len(resolved)),
+		inDegree:       make(map[TaskNode]int, len(resolved)),
 	}
 
 	byService := make(map[string]ResolvedTaskNode, len(resolved))

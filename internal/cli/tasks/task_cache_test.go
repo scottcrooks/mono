@@ -135,6 +135,13 @@ func TestIntegrationTaskCacheKeyIncludesProfileAndEnvironment(t *testing.T) {
 	if strings.Contains(first, "secret-value") || strings.Contains(first, "other-secret") {
 		t.Fatalf("cache key exposed environment value: %s", first)
 	}
+	preflightChanged, err := buildIntegrationTaskCacheKey(svc, TaskTest, "go test ./...\nintegration-preflight=node scripts/check.js", []string{"TOKEN=secret-value", "EMPTY="})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if preflightChanged == first {
+		t.Fatal("expected preflight command to participate in integration cache identity")
+	}
 }
 
 func TestBuildTaskCacheKeyIgnoresRootTimingArtifactsOnly(t *testing.T) {

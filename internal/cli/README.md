@@ -99,6 +99,69 @@ references do not expand against the repository file or inherited environment.
 Shell command substitutions are never executed. Applications remain responsible
 for any configuration loading they perform after launch.
 
+## Focused integration tests
+
+`mono test --integration` preserves the existing broad test behavior unless the
+repository opts into focused intent with this root `services.yaml` setting:
+
+```yaml
+integration:
+  requireFocus: true
+```
+
+With that policy enabled, every integration invocation needs `--package`,
+`--run`, or the explicit `--full-suite` intent. Service names and `--all` still
+select services; `--full-suite` does not mean all services. Package selectors
+repeat and use Go package-pattern syntax. `--run` is a Go regular expression;
+slash-separated subtest components are passed through to Go, while list output
+shows only approximate top-level test candidates. Listing performs Go package
+discovery and test listing, but does not execute test functions, preflight
+commands, or test cache operations. Directly selected services must match; an
+empty selection there fails before tests run. Dependencies remain in the task
+graph and ordering, but an unmatched dependency test task is skipped. A focused
+request fails if a runnable selected node is not Go.
+
+`--go-concurrency N` sets Go's package parallelism with `-p N` during discovery
+and test execution; it is independent of Mono's task-level `--concurrency`.
+When explicitly set, it conflicts with `GOFLAGS` containing `-p` or `-p=...`.
+GOFLAGS values are not printed. Focused runs bypass the task cache so a broad
+suite cache entry cannot mask selection. Use `--no-cache` when external service
+state may have changed.
+
+Services may configure an application-owned integration preflight. It uses the
+same shell-free allowlisted command syntax, service directory, and effective
+integration environment as the test child:
+
+```yaml
+services:
+  - name: flock
+    integrationPreflight: node scripts/check-integration-env.js
+```
+
+Mono runs the preflight after selection succeeds and before cache lookup or the
+test, including before a cache hit. Failure or cancellation prevents the test
+and cache use. Its command participates in the integration cache identity.
+Preflight output is command output; Mono does not log environment values.
+
+Proposed Flock migration example (the checker path is consumer-specific and
+this example does not assert that a Flock configuration has been verified):
+
+```yaml
+integration:
+  requireFocus: true
+services:
+  - name: flock
+    integrationPreflight: node scripts/check-integration-env.js
+```
+
+```sh
+mono test flock --integration --package './internal/store/...' --run '^TestStore$' --go-concurrency 2
+```
+
+A Flock wrapper can delegate package/test selection and `test.env` loading to
+Mono. Keep resource checks in the application checker; package selection does
+not require a per-package `TestMain` guard.
+
 Only these two `.env` locations are read, including when a service directory is
 an absolute path. There is no ancestor search, `.env.local`, or environment-specific
 variant. Missing files are optional. Other read errors or malformed files stop
