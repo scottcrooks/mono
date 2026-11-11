@@ -3,6 +3,7 @@ package tasks
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -99,6 +100,7 @@ func runDependencyInstallsWithConfigAndProgress(cfg *Config, services []string, 
 
 	results := make([]DependencyInstallResult, 0, len(targets))
 	failures := 0
+	var failureErrors []error
 	printer := output.DefaultPrinter()
 	var stdoutCapture *bytes.Buffer
 	var stderrCapture *bytes.Buffer
@@ -125,6 +127,7 @@ func runDependencyInstallsWithConfigAndProgress(cfg *Config, services []string, 
 				Status: TaskStatusFailed,
 				Err:    err,
 			})
+			failureErrors = append(failureErrors, fmt.Errorf("dependency install for %s target in %s (%s): %w", target.Archetype, target.Dir, target.Command, err))
 			failures++
 			continue
 		}
@@ -137,7 +140,7 @@ func runDependencyInstallsWithConfigAndProgress(cfg *Config, services []string, 
 	}
 
 	if failures > 0 {
-		return results, fmt.Errorf("%d dependency install target(s) failed", failures)
+		return results, fmt.Errorf("%d dependency install target(s) failed: %w", failures, errors.Join(failureErrors...))
 	}
 	return results, nil
 }

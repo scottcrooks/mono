@@ -284,6 +284,89 @@ func TestRunDependencyInstallsWithConfigBufferedStaysQuietOnSuccess(t *testing.T
 	}
 }
 
+func TestRunDependencyInstallsReturnsContextualFailure(t *testing.T) {
+	repo := t.TempDir()
+	withWorkingDir(t, repo)
+	writeFile(t, repo, "apps/api/go.mod", "module example.com/api\n")
+	cause := errors.New("download unavailable")
+	original := runDependencyInstallCommand
+	runDependencyInstallCommand = func(_ context.Context, _ DependencyInstallTarget, _, _ io.Writer) error { return cause }
+	t.Cleanup(func() { runDependencyInstallCommand = original })
+
+	var results []DependencyInstallResult
+	_, _ = captureStreams(t, func() {
+		var err error
+		results, err = RunDependencyInstallsWithConfigBuffered(&Config{Services: []Service{{Name: "api", Path: "apps/api", Archetype: "go"}}}, []string{"api"})
+		if err == nil {
+			t.Fatal("expected dependency install error")
+		}
+		for _, part := range []string{"1 dependency install target(s) failed", "go target", "apps/api", "go mod download", "download unavailable"} {
+			if !strings.Contains(err.Error(), part) {
+				t.Errorf("returned error %q does not contain %q", err, part)
+			}
+		}
+		if !errors.Is(err, cause) {
+			t.Errorf("returned error does not preserve cause: %v", err)
+		}
+	})
+	if len(results) != 1 || results[0].Status != TaskStatusFailed || !errors.Is(results[0].Err, cause) {
+		t.Fatalf("unexpected results: %+v", results)
+	}
+}
+
+func TestRunDependencyInstallsReturnsEveryFailureAndSuccessfulStatus(t *testing.T) {
+	repo := t.TempDir()
+	withWorkingDir(t, repo)
+	writeFile(t, repo, "apps/api/go.mod", "module example.com/api\n")
+	writeFile(t, repo, "apps/worker/go.mod", "module example.com/worker\n")
+	writeFile(t, repo, "apps/web/package.json", "{}\n")
+	apiCause := errors.New("api download failed")
+	workerCause := errors.New("worker download failed")
+	original := runDependencyInstallCommand
+	runDependencyInstallCommand = func(_ context.Context, target DependencyInstallTarget, _, _ io.Writer) error {
+		switch target.Dir {
+		case "apps/api":
+			return apiCause
+		case "apps/worker":
+			return workerCause
+		default:
+			return nil
+		}
+	}
+	t.Cleanup(func() { runDependencyInstallCommand = original })
+
+	var results []DependencyInstallResult
+	_, _ = captureStreams(t, func() {
+		var err error
+		results, err = RunDependencyInstallsWithConfigBuffered(&Config{Services: []Service{
+			{Name: "api", Path: "apps/api", Archetype: "go"},
+			{Name: "worker", Path: "apps/worker", Archetype: "go"},
+			{Name: "web", Path: "apps/web", Archetype: "react"},
+		}}, []string{"api", "worker", "web"})
+		if err == nil {
+			t.Fatal("expected dependency install error")
+		}
+		for _, part := range []string{"2 dependency install target(s) failed", "apps/api", "api download failed", "apps/worker", "worker download failed"} {
+			if !strings.Contains(err.Error(), part) {
+				t.Errorf("returned error %q does not contain %q", err, part)
+			}
+		}
+		if !errors.Is(err, apiCause) || !errors.Is(err, workerCause) {
+			t.Errorf("returned error does not preserve both causes: %v", err)
+		}
+	})
+	if len(results) != 3 {
+		t.Fatalf("got %d results, want 3: %+v", len(results), results)
+	}
+	statuses := map[string]TaskRunStatus{}
+	for _, result := range results {
+		statuses[result.Target.Dir] = result.Status
+	}
+	if statuses["apps/api"] != TaskStatusFailed || statuses["apps/worker"] != TaskStatusFailed || statuses["apps/web"] != TaskStatusSucceeded {
+		t.Fatalf("unexpected result statuses: %+v", statuses)
+	}
+}
+
 func TestRunDependencyInstallsWithConfigBufferedReplaysFailure(t *testing.T) {
 	repo := t.TempDir()
 	withWorkingDir(t, repo)
