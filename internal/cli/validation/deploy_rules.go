@@ -16,20 +16,10 @@ func validateDeployRules(services []manifestService, info map[int]serviceNodeInf
 		if !ok {
 			sInfo = serviceNodeInfo{serviceAt: position{}}
 		}
-		deployPos := requiredFieldPos(sInfo, "deploy")
-
 		if svc.Deploy == nil {
-			report.add(Diagnostic{
-				Severity: SeverityWarning,
-				Code:     "deploy.required",
-				Path:     prefix,
-				Message:  "missing required deploy contract for service",
-				Service:  label,
-				Line:     deployPos.line,
-				Column:   deployPos.column,
-			})
 			continue
 		}
+		deployPos := requiredFieldPos(sInfo, "deploy")
 
 		if svc.Deploy.ContainerPort <= 0 {
 			report.add(Diagnostic{

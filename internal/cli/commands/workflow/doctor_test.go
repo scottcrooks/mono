@@ -43,6 +43,32 @@ func TestValidateManifestForDoctorSuccess(t *testing.T) {
 	}
 }
 
+func TestValidateManifestForDoctorServiceWithoutDeploy(t *testing.T) {
+	repo := t.TempDir()
+	mustMkdirAll(t, filepath.Join(repo, "apps", "svc"))
+	mustWrite(t, filepath.Join(repo, "apps", "svc", "go.mod"), "module svc\n")
+	manifestPath := filepath.Join(repo, "services.yaml")
+	mustWrite(t, manifestPath, `services:
+  - name: svc
+    path: apps/svc
+    kind: service
+    archetype: go
+    owner: team
+`)
+
+	var out bytes.Buffer
+	if err := validateManifestForDoctor(manifestPath, &out); err != nil {
+		t.Fatalf("validateManifestForDoctor returned error: %v", err)
+	}
+	output := out.String()
+	if !strings.Contains(output, "Summary: 0 error(s), 0 warning(s)") {
+		t.Fatalf("expected clean summary, got %q", output)
+	}
+	if strings.Contains(output, "deploy.required") || strings.Contains(output, "deploy contract") {
+		t.Fatalf("did not expect missing-deploy diagnostic, got %q", output)
+	}
+}
+
 func TestValidateManifestForDoctorValidationFailure(t *testing.T) {
 	repo := t.TempDir()
 	manifestPath := filepath.Join(repo, "services.yaml")

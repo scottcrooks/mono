@@ -100,6 +100,51 @@ func TestFocusedSelectionRejectsEmptyAndInvalidPackagesBeforeTests(t *testing.T)
 	}
 }
 
+func TestFocusedDiscoveryFailuresPreserveStderrAndDoNotRunTests(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		pattern      string
+		wantPhase    string
+		wantDetail   string
+		brokenTest   bool
+		brokenModule bool
+	}{
+		{name: "package discovery", pattern: "./...", wantPhase: "Go package discovery failed", wantDetail: "go.mod", brokenModule: true},
+		{name: "test discovery", pattern: "./...", wantPhase: "Go test discovery failed", wantDetail: "expected", brokenTest: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			repo := t.TempDir()
+			withWorkingDir(t, repo)
+			service := filepath.Join(repo, "svc")
+			mustWrite(t, filepath.Join(service, "go.mod"), "module example.test/svc\n\ngo 1.24\n")
+			mustWrite(t, filepath.Join(service, "svc.go"), "package svc\n")
+			mustWrite(t, filepath.Join(service, "svc_test.go"), "package svc\nimport (\"os\"; \"testing\")\nfunc TestMarker(t *testing.T) { _ = os.WriteFile(\"marker\", []byte(\"ran\"), 0600) }\n")
+			if tc.brokenTest {
+				mustWrite(t, filepath.Join(service, "broken_test.go"), "package svc\nfunc TestBroken( {\n")
+			}
+			if tc.brokenModule {
+				mustWrite(t, filepath.Join(service, "go.mod"), "module example.test/svc\nthis is not a directive\n")
+			}
+			prepared, err := PrepareTaskRun(&Config{Services: []Service{{Name: "svc", Path: "svc", Kind: "service", Archetype: "go"}}}, TaskRequest{Task: TaskTest, Services: []string{"svc"}, ExactServices: true, Integration: true})
+			if err != nil {
+				t.Fatal(err)
+			}
+			err = resolveFocusedGoSelection(prepared.graph, TaskRunOptions{Integration: true, Packages: []string{tc.pattern}})
+			if err == nil {
+				t.Fatal("expected focused discovery error")
+			}
+			for _, want := range []string{"svc:test", tc.wantPhase, tc.wantDetail} {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("error %q does not contain %q", err, want)
+				}
+			}
+			if _, statErr := os.Stat(filepath.Join(service, "marker")); !os.IsNotExist(statErr) {
+				t.Fatalf("test body ran after discovery failure: %v", statErr)
+			}
+		})
+	}
+}
+
 func TestFocusedDiscoveryHonorsCommandContextCancellation(t *testing.T) {
 	repo := t.TempDir()
 	withWorkingDir(t, repo)
@@ -1057,7 +1102,7 @@ func TestPreparedTaskRunHistoryFailuresRemainAdvisory(t *testing.T) {
 	resolved.Command = "go definitely-not-a-command"
 	failing.graph.nodes[failedNode] = resolved
 	failedResults, runErr := RunPreparedTaskRun(failing, TaskRunOptions{NoCache: true, Concurrency: 1})
-	if runErr == nil || len(failedResults) != 1 || failedResults[0].Err == nil || !strings.Contains(failedResults[0].Err.Error(), "exit status") {
+	if runErr == nil || len(failedResults) != 1 || failedResults[0].Err == nil || !strings.Contains(failedResults[0].Err.Error(), "exit status") || !strings.Contains(runErr.Error(), "[api:audit]") {
 		t.Fatalf("history failure replaced task error: results=%+v error=%v", failedResults, runErr)
 	}
 }

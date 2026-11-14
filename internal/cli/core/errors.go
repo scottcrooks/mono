@@ -39,7 +39,10 @@ func AsExitCodeError(err error) (ExitCodeError, bool) {
 	if err == nil {
 		return nil, false
 	}
-	var target ExitCodeError
+	// exec.ExitError also has an ExitCode method. Only errors created through
+	// NewExitCodeError represent an intentional CLI exit code; treating a
+	// wrapped subprocess failure as one hides its surrounding diagnostics.
+	var target *exitCodeError
 	if !errors.As(err, &target) {
 		return nil, false
 	}

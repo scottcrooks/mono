@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -113,6 +114,39 @@ func TestRunIntegrationFlagRejectedForNonTestTask(t *testing.T) {
 	})
 	if !strings.Contains(stderr, "--integration is only supported with \"test\"") {
 		t.Fatalf("unexpected stderr: %q", stderr)
+	}
+}
+
+func TestRunFocusedDiscoveryPrintsCompilerDiagnostic(t *testing.T) {
+	repo := t.TempDir()
+	t.Chdir(repo)
+	service := filepath.Join(repo, "svc")
+	if err := os.MkdirAll(service, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	write := func(path, content string) {
+		t.Helper()
+		if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write(filepath.Join(service, "go.mod"), "module example.test/svc\n\ngo 1.24\n")
+	write(filepath.Join(service, "broken_test.go"), "package svc\nfunc TestBroken( {\n")
+	write(filepath.Join(repo, "services.yaml"), `services:
+  - name: svc
+    path: svc
+    kind: service
+    archetype: go
+`)
+	stderr := captureStderr(t, func() {
+		if code := Run([]string{"mono", "test", "svc", "--integration", "--package", "./...", "--list"}); code == 0 {
+			t.Fatal("expected focused discovery to fail")
+		}
+	})
+	for _, want := range []string{"svc:test", "Go test discovery failed", "expected"} {
+		if !strings.Contains(stderr, want) {
+			t.Errorf("stderr %q does not contain discovery detail %q", stderr, want)
+		}
 	}
 }
 

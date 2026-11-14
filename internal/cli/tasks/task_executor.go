@@ -296,6 +296,16 @@ func (e taskExecutor) execute(ctx context.Context, graph *taskGraph, opts TaskRu
 
 	summary := summarizeTaskResults(results)
 	if summary.Failed > 0 {
+		failures := make([]error, 0, summary.Failed)
+		for _, result := range results {
+			if result.Status != TaskStatusFailed || result.Err == nil {
+				continue
+			}
+			failures = append(failures, fmt.Errorf("[%s] %w", result.Node, result.Err))
+		}
+		if len(failures) > 0 {
+			return results, fmt.Errorf("%d task(s) failed: %w", summary.Failed, errors.Join(failures...))
+		}
 		return results, fmt.Errorf("%d task(s) failed", summary.Failed)
 	}
 	return results, nil

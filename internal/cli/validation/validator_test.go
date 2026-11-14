@@ -314,11 +314,8 @@ func TestValidateServicesManifestPathAndDeployRules(t *testing.T) {
 	if !containsCode(report, "deploy.container_port") {
 		t.Fatalf("expected deploy.container_port diagnostic, got %+v", report.Diagnostics)
 	}
-	if !containsCode(report, "deploy.required") {
-		t.Fatalf("expected deploy.required diagnostic, got %+v", report.Diagnostics)
-	}
-	if severityForCode(report, "deploy.required") != SeverityWarning {
-		t.Fatalf("expected deploy.required warning, got %+v", report.Diagnostics)
+	if containsCode(report, "deploy.required") {
+		t.Fatalf("did not expect deploy.required diagnostic for absent deploy block, got %+v", report.Diagnostics)
 	}
 }
 
